@@ -33,35 +33,101 @@ def _load_clip_processor() -> CLIPProcessor:
     return CLIPProcessor.from_pretrained(CLIP_MODEL_NAME)
 
 
-def _crop_largest_detection(img: Image.Image) -> Image.Image:
+class RegistrationImageError(ValueError):
+    pass
+
+
+def _detect_boxes(img: Image.Image) -> list[list[float]]:
     yolo_model = _load_yolo_model()
     results = yolo_model.predict(img, classes=_parse_yolo_classes(), verbose=False)
 
     if not results or len(results[0].boxes) == 0:
-        return img
+        return []
 
-    boxes = results[0].boxes.xyxy.tolist()
-    largest_box = max(boxes, key=lambda box: (box[2] - box[0]) * (box[3] - box[1]))
-    left, top, right, bottom = largest_box
-    return img.crop((left, top, right, bottom))
+    width, height = img.size
+    boxes = []
+
+    for box in results[0].boxes.xyxy.tolist():
+        left, top, right, bottom = box
+        left = max(0.0, min(float(left), float(width)))
+        top = max(0.0, min(float(top), float(height)))
+        right = max(0.0, min(float(right), float(width)))
+        bottom = max(0.0, min(float(bottom), float(height)))
+
+        if right > left and bottom > top:
+            boxes.append([left, top, right, bottom])
+
+    return boxes
 
 
-def process_image(image_path: str) -> list[float]:
-    img = Image.open(image_path).convert("RGB")
-    img = _crop_largest_detection(img)
+def _crop_images(img: Image.Image, boxes: list[list[float]]) -> list[Image.Image]:
+    return [img.crop(tuple(box)) for box in boxes]
+
+
+def _embed_images(images: list[Image.Image]) -> list[list[float]]:
+    if not images:
+        return []
 
     clip_processor = _load_clip_processor()
     clip_model = _load_clip_model()
-    inputs = clip_processor(images=img, return_tensors="pt").to(DEVICE)
+    inputs = clip_processor(images=images, return_tensors="pt").to(DEVICE)
 
     with torch.no_grad():
         vision_outputs = clip_model.vision_model(pixel_values=inputs["pixel_values"])
         image_features = clip_model.visual_projection(vision_outputs.pooler_output)
 
     image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
-    image_features = image_features.squeeze(0)
 
-    if image_features.ndim != 1 or image_features.shape[0] != 512:
-        raise ValueError(f"Expected a 512-dimensional embedding, got {tuple(image_features.shape)}")
+    if image_features.ndim != 2 or image_features.shape[1] != 512:
+        raise ValueError(f"Expected N x 512 embeddings, got {tuple(image_features.shape)}")
 
     return image_features.tolist()
+
+
+def process_image(image_path: str) -> list[float]:
+    img = Image.open(image_path).convert("RGB")
+    embeddings = _embed_images([img])
+
+    if len(embeddings) != 1:
+        raise ValueError(f"Expected one embedding, got {len(embeddings)}")
+
+    return embeddings[0]
+
+
+def process_registration_image(image_path: str) -> list[float]:
+    img = Image.open(image_path).convert("RGB")
+    boxes = _detect_boxes(img)
+
+    if len(boxes) == 0:
+        raise RegistrationImageError("Không phát hiện sản phẩm trong ảnh mẫu")
+
+    if len(boxes) > 1:
+        raise RegistrationImageError(
+            "Vui lòng chụp ảnh chỉ chứa 1 sản phẩm duy nhất để làm mẫu"
+        )
+
+    embeddings = _embed_images(_crop_images(img, boxes))
+
+    if len(embeddings) != 1:
+        raise ValueError(f"Expected one registration embedding, got {len(embeddings)}")
+
+    return embeddings[0]
+
+
+def process_multiple_images(image_path: str) -> list[dict]:
+    img = Image.open(image_path).convert("RGB")
+    width, height = img.size
+    boxes = _detect_boxes(img)
+
+    if not boxes:
+        boxes = [[0.0, 0.0, float(width), float(height)]]
+
+    embeddings = _embed_images(_crop_images(img, boxes))
+
+    if len(embeddings) != len(boxes):
+        raise ValueError(f"Expected {len(boxes)} embeddings, got {len(embeddings)}")
+
+    return [
+        {"box": box, "embedding": embedding}
+        for box, embedding in zip(boxes, embeddings)
+    ]

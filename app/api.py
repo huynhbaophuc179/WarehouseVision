@@ -8,7 +8,12 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFi
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from .ai_pipeline import process_image
+from .ai_pipeline import (
+    RegistrationImageError,
+    process_image,
+    process_multiple_images,
+    process_registration_image,
+)
 from .database import SessionLocal, init_db
 from .models import Product
 
@@ -36,6 +41,15 @@ class ProductResponse(BaseModel):
 
 class RecognizeResponse(ProductResponse):
     distance: float
+
+
+class MultiRecognizeResponse(BaseModel):
+    box: list[float]
+    product_id: str | None
+    name: str | None
+    inventory_count: int | None
+    distance: float | None
+    status: str
 
 
 class RecognizeCandidatesResponse(BaseModel):
@@ -95,7 +109,11 @@ async def upsert_product(
     temp_path = _save_upload_to_temp(file)
 
     try:
-        embedding = process_image(temp_path)
+        try:
+            embedding = process_registration_image(temp_path)
+        except RegistrationImageError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
         product = db.get(Product, product_id)
 
         if product is None:
@@ -122,32 +140,58 @@ async def upsert_product(
             os.remove(temp_path)
 
 
-@app.post("/api/v1/recognize", response_model=RecognizeResponse)
+@app.post("/api/v1/recognize", response_model=list[MultiRecognizeResponse])
 async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db)):
     _ensure_image(file)
     temp_path = _save_upload_to_temp(file)
 
     try:
-        query_vector = process_image(temp_path)
-        results = _nearest_products(db, query_vector)
+        detected_items = process_multiple_images(temp_path)
+        response_items = []
 
-        if not results:
-            raise HTTPException(status_code=404, detail="No reference products have embeddings")
+        for item in detected_items:
+            results = _nearest_products(db, item["embedding"])
 
-        product, distance = results[0]
+            if not results:
+                response_items.append(
+                    MultiRecognizeResponse(
+                        box=item["box"],
+                        product_id=None,
+                        name=None,
+                        inventory_count=None,
+                        distance=None,
+                        status="unknown",
+                    )
+                )
+                continue
 
-        if distance > SIMILARITY_THRESHOLD:
-            raise HTTPException(
-                status_code=404,
-                detail="Product not recognized or confidence too low",
+            product, distance = results[0]
+
+            if distance > SIMILARITY_THRESHOLD:
+                response_items.append(
+                    MultiRecognizeResponse(
+                        box=item["box"],
+                        product_id=None,
+                        name=None,
+                        inventory_count=None,
+                        distance=distance,
+                        status="unknown",
+                    )
+                )
+                continue
+
+            response_items.append(
+                MultiRecognizeResponse(
+                    box=item["box"],
+                    product_id=product.product_id,
+                    name=product.name,
+                    inventory_count=product.inventory_count,
+                    distance=distance,
+                    status="recognized",
+                )
             )
 
-        return RecognizeResponse(
-            product_id=product.product_id,
-            name=product.name,
-            inventory_count=product.inventory_count,
-            distance=float(distance),
-        )
+        return response_items
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
