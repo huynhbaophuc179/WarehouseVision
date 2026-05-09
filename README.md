@@ -52,7 +52,7 @@ Health check:
 curl http://localhost:8000/health
 ```
 
-Register a product reference image. The image must contain exactly one YOLO-detected object:
+Register a product reference image. If YOLO detects exactly one object, the API stores an embedding for that crop. If YOLO detects zero objects and `REGISTRATION_FALLBACK_TO_FULL_IMAGE=true`, the API stores a full-image embedding. Images with multiple detected objects are rejected:
 
 ```bash
 curl -F product_id=CUP-001 \
@@ -106,8 +106,14 @@ API service variables in `docker-compose.yml`:
 - `DATABASE_URL`: SQLAlchemy connection string for PostgreSQL.
 - `SIMILARITY_THRESHOLD`: maximum cosine distance for a recognized result. Larger distances become `unknown`.
 - `YOLO_MODEL_PATH`: YOLO model path, default `yolov8n.pt`.
-- `YOLO_CLASSES`: comma-separated YOLO class IDs to detect. Empty value means no class filter.
+- `YOLO_CLASSES`: comma-separated YOLO class IDs to detect. Use an empty value for the generic PoC so YOLO is not restricted to a few COCO classes.
 - `CLIP_MODEL_NAME`: Hugging Face CLIP model name, default `openai/clip-vit-base-patch32`.
+- `REGISTRATION_FALLBACK_TO_FULL_IMAGE`: when `true`, product registration embeds the full image if YOLO detects zero boxes.
+- `LOG_LEVEL`: Python logging level for the API, default `INFO`.
+
+For this generic PoC, keep `YOLO_CLASSES=""`. In production, train or provide a one-class YOLO model for `product` detection, then calibrate `YOLO_CLASSES` and detection thresholds around real warehouse images.
+
+`SIMILARITY_THRESHOLD` must be calibrated with real product photos. The default is only a starting point; too high can create false matches, and too low can mark valid products as `unknown`.
 
 ## Database Initialization
 
@@ -136,7 +142,8 @@ These checks do not run YOLO or CLIP inference.
 ## Known Limitations
 
 - The default `yolov8n.pt` model is trained on COCO classes, not industrial inventory parts.
-- Product registration is strict: zero or multiple detected boxes are rejected to keep reference embeddings clean.
+- Product registration rejects multiple detected boxes, but can use full-image fallback when YOLO detects zero boxes.
 - Recognition uses threshold-based unknown handling and does not update inventory quantities automatically.
+- Real accuracy depends on training a one-class product detector later and calibrating the similarity threshold with real images.
 - Model weights are downloaded on first use unless already cached in the Docker volume.
 - No auth, Qdrant, Kubernetes, model fine-tuning, or automatic stock mutation is included in this PoC.

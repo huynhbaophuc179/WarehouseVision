@@ -11,8 +11,15 @@ YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "yolov8n.pt")
 CLIP_MODEL_NAME = os.getenv("CLIP_MODEL_NAME", "openai/clip-vit-base-patch32")
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _parse_yolo_classes() -> list[int] | None:
-    raw_classes = os.getenv("YOLO_CLASSES", "41,44,46").strip()
+    raw_classes = os.getenv("YOLO_CLASSES", "").strip()
     if not raw_classes:
         return None
     return [int(class_id.strip()) for class_id in raw_classes.split(",") if class_id.strip()]
@@ -98,15 +105,19 @@ def process_registration_image(image_path: str) -> list[float]:
     img = Image.open(image_path).convert("RGB")
     boxes = _detect_boxes(img)
 
-    if len(boxes) == 0:
-        raise RegistrationImageError("Không phát hiện sản phẩm trong ảnh mẫu")
-
     if len(boxes) > 1:
         raise RegistrationImageError(
             "Vui lòng chụp ảnh chỉ chứa 1 sản phẩm duy nhất để làm mẫu"
         )
 
-    embeddings = _embed_images(_crop_images(img, boxes))
+    if len(boxes) == 1:
+        images = _crop_images(img, boxes)
+    elif _env_flag("REGISTRATION_FALLBACK_TO_FULL_IMAGE", True):
+        images = [img]
+    else:
+        raise RegistrationImageError("Không phát hiện sản phẩm trong ảnh mẫu")
+
+    embeddings = _embed_images(images)
 
     if len(embeddings) != 1:
         raise ValueError(f"Expected one registration embedding, got {len(embeddings)}")

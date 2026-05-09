@@ -21,8 +21,9 @@ services:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/visual_inventory
       SIMILARITY_THRESHOLD: "0.25"
       YOLO_MODEL_PATH: yolov8n.pt
-      YOLO_CLASSES: "41,44,46"
+      YOLO_CLASSES: ""
       CLIP_MODEL_NAME: openai/clip-vit-base-patch32
+      REGISTRATION_FALLBACK_TO_FULL_IMAGE: "true"
     ports:
       - "8000:8000"
     volumes:

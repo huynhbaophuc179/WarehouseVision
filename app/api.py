@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 import tempfile
@@ -16,6 +17,9 @@ from .ai_pipeline import (
 )
 from .database import SessionLocal, init_db
 from .models import Product
+
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger(__name__)
 
 SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.25"))
 
@@ -148,11 +152,18 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
     try:
         detected_items = process_multiple_images(temp_path)
         response_items = []
+        logger.info("recognize detected_boxes=%s", len(detected_items))
 
-        for item in detected_items:
+        for index, item in enumerate(detected_items, start=1):
             results = _nearest_products(db, item["embedding"])
 
             if not results:
+                logger.info(
+                    "recognize item=%s best_distance=%s status=%s",
+                    index,
+                    None,
+                    "unknown",
+                )
                 response_items.append(
                     MultiRecognizeResponse(
                         box=item["box"],
@@ -168,6 +179,12 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
             product, distance = results[0]
 
             if distance > SIMILARITY_THRESHOLD:
+                logger.info(
+                    "recognize item=%s best_distance=%.6f status=%s",
+                    index,
+                    distance,
+                    "unknown",
+                )
                 response_items.append(
                     MultiRecognizeResponse(
                         box=item["box"],
@@ -180,6 +197,12 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
                 )
                 continue
 
+            logger.info(
+                "recognize item=%s best_distance=%.6f status=%s",
+                index,
+                distance,
+                "recognized",
+            )
             response_items.append(
                 MultiRecognizeResponse(
                     box=item["box"],
