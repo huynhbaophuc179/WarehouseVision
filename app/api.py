@@ -97,12 +97,14 @@ def _nearest_product_candidates(
     query_vector: list[float],
     limit: int = 1,
 ) -> list[tuple[Product, ProductEmbedding, float]]:
+    raw_limit = max(limit * 10, 50)
     distance_expr = ProductEmbedding.embedding.cosine_distance(query_vector)
     rows = (
         db.query(Product, ProductEmbedding, distance_expr.label("distance"))
         .join(Product, ProductEmbedding.product_id == Product.product_id)
         .filter(ProductEmbedding.embedding.isnot(None))
         .order_by(distance_expr)
+        .limit(raw_limit)
         .all()
     )
 
