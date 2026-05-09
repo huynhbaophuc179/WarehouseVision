@@ -16,7 +16,7 @@ from .ai_pipeline import (
     process_registration_image,
 )
 from .database import SessionLocal, init_db
-from .models import Product
+from .models import Product, ProductEmbedding
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
@@ -47,6 +47,18 @@ class RecognizeResponse(ProductResponse):
     distance: float
 
 
+class CandidateResponse(RecognizeResponse):
+    matched_embedding_id: int
+    matched_view_label: str | None
+
+
+class ProductEmbeddingResponse(BaseModel):
+    id: int
+    product_id: str
+    view_label: str | None
+    image_path: str | None
+
+
 class MultiRecognizeResponse(BaseModel):
     box: list[float]
     product_id: str | None
@@ -57,7 +69,7 @@ class MultiRecognizeResponse(BaseModel):
 
 
 class RecognizeCandidatesResponse(BaseModel):
-    candidates: list[RecognizeResponse]
+    candidates: list[CandidateResponse]
 
 
 def get_db():
@@ -80,20 +92,34 @@ def _ensure_image(file: UploadFile) -> None:
         raise HTTPException(status_code=400, detail="Uploaded file must be an image")
 
 
-def _nearest_products(
+def _nearest_product_candidates(
     db: Session,
     query_vector: list[float],
     limit: int = 1,
-) -> list[tuple[Product, float]]:
-    distance_expr = Product.embedding.cosine_distance(query_vector)
+) -> list[tuple[Product, ProductEmbedding, float]]:
+    distance_expr = ProductEmbedding.embedding.cosine_distance(query_vector)
     rows = (
-        db.query(Product, distance_expr.label("distance"))
-        .filter(Product.embedding.isnot(None))
+        db.query(Product, ProductEmbedding, distance_expr.label("distance"))
+        .join(Product, ProductEmbedding.product_id == Product.product_id)
+        .filter(ProductEmbedding.embedding.isnot(None))
         .order_by(distance_expr)
-        .limit(limit)
         .all()
     )
-    return [(product, float(distance)) for product, distance in rows if distance is not None]
+
+    candidates = []
+    seen_product_ids = set()
+
+    for product, product_embedding, distance in rows:
+        if distance is None or product.product_id in seen_product_ids:
+            continue
+
+        candidates.append((product, product_embedding, float(distance)))
+        seen_product_ids.add(product.product_id)
+
+        if len(candidates) >= limit:
+            break
+
+    return candidates
 
 
 @app.get("/health")
@@ -106,6 +132,7 @@ async def upsert_product(
     product_id: str = Form(...),
     name: str = Form(...),
     inventory_count: int = Form(0),
+    view_label: str | None = Form(None),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
@@ -126,7 +153,14 @@ async def upsert_product(
 
         product.name = name
         product.inventory_count = inventory_count
-        product.embedding = embedding
+        db.flush()
+        db.add(
+            ProductEmbedding(
+                product_id=product.product_id,
+                embedding=embedding,
+                view_label=view_label,
+            )
+        )
 
         db.commit()
         db.refresh(product)
@@ -135,6 +169,54 @@ async def upsert_product(
             product_id=product.product_id,
             name=product.name,
             inventory_count=product.inventory_count,
+        )
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+@app.post(
+    "/api/v1/products/{product_id}/embeddings",
+    response_model=ProductEmbeddingResponse,
+    status_code=201,
+)
+async def add_product_embedding(
+    product_id: str,
+    view_label: str | None = Form(None),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    _ensure_image(file)
+    temp_path = _save_upload_to_temp(file)
+
+    try:
+        product = db.get(Product, product_id)
+
+        if product is None:
+            raise HTTPException(status_code=404, detail="Product not found")
+
+        try:
+            embedding = process_registration_image(temp_path)
+        except RegistrationImageError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        product_embedding = ProductEmbedding(
+            product_id=product.product_id,
+            embedding=embedding,
+            view_label=view_label,
+        )
+        db.add(product_embedding)
+        db.commit()
+        db.refresh(product_embedding)
+
+        return ProductEmbeddingResponse(
+            id=product_embedding.id,
+            product_id=product_embedding.product_id,
+            view_label=product_embedding.view_label,
+            image_path=product_embedding.image_path,
         )
     except Exception:
         db.rollback()
@@ -155,7 +237,7 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
         logger.info("recognize detected_boxes=%s", len(detected_items))
 
         for index, item in enumerate(detected_items, start=1):
-            results = _nearest_products(db, item["embedding"])
+            results = _nearest_product_candidates(db, item["embedding"])
 
             if not results:
                 logger.info(
@@ -176,7 +258,7 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
                 )
                 continue
 
-            product, distance = results[0]
+            product, product_embedding, distance = results[0]
 
             if distance > SIMILARITY_THRESHOLD:
                 logger.info(
@@ -231,20 +313,22 @@ async def recognize_candidates(
 
     try:
         query_vector = process_image(temp_path)
-        results = _nearest_products(db, query_vector, limit=top_k)
+        results = _nearest_product_candidates(db, query_vector, limit=top_k)
 
         if not results:
             raise HTTPException(status_code=404, detail="No reference products have embeddings")
 
         return RecognizeCandidatesResponse(
             candidates=[
-                RecognizeResponse(
+                CandidateResponse(
                     product_id=product.product_id,
                     name=product.name,
                     inventory_count=product.inventory_count,
                     distance=distance,
+                    matched_embedding_id=product_embedding.id,
+                    matched_view_label=product_embedding.view_label,
                 )
-                for product, distance in results
+                for product, product_embedding, distance in results
             ]
         )
     finally:

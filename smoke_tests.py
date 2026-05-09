@@ -1,5 +1,5 @@
 from app.api import app
-from app.models import Product
+from app.models import ProductEmbedding
 
 
 def test_required_routes_exist() -> None:
@@ -7,6 +7,7 @@ def test_required_routes_exist() -> None:
     required_paths = {
         "/health",
         "/api/v1/products",
+        "/api/v1/products/{product_id}/embeddings",
         "/api/v1/recognize",
         "/api/v1/recognize/candidates",
     }
@@ -15,12 +16,17 @@ def test_required_routes_exist() -> None:
     assert not missing_paths, f"Missing required routes: {sorted(missing_paths)}"
 
 
+def test_product_embedding_model_exists() -> None:
+    assert ProductEmbedding.__tablename__ == "product_embeddings"
+
+
 def test_product_embedding_dimension() -> None:
-    embedding_type = Product.__table__.c.embedding.type
+    embedding_type = ProductEmbedding.__table__.c.embedding.type
     assert getattr(embedding_type, "dim", None) == 512
 
 
 if __name__ == "__main__":
     test_required_routes_exist()
+    test_product_embedding_model_exists()
     test_product_embedding_dimension()
     print("Smoke checks passed")

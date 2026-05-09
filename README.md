@@ -6,12 +6,14 @@ Self-hosted visual inventory proof of concept for registering products from imag
 
 - FastAPI API in `app/api.py`
 - YOLO + CLIP image pipeline in `app/ai_pipeline.py`
-- PostgreSQL 15 with pgvector for product metadata and embeddings
-- SQLAlchemy model `Product(product_id, name, inventory_count, embedding)`
+- PostgreSQL 15 with pgvector for product metadata and visual embeddings
+- SQLAlchemy models:
+  - `Product(product_id, name, inventory_count, created_at, updated_at)`
+  - `ProductEmbedding(id, product_id, embedding, image_path, view_label, created_at)`
 - Streamlit frontend in `frontend/main.py`
 - Docker Compose starts `db`, `api`, and `frontend`
 
-The API stores one normalized 512-dimensional CLIP embedding per product. Recognition detects product regions with YOLO, crops each region, embeds each crop, searches nearest products with pgvector cosine distance, and returns `recognized` or `unknown` per detected region.
+The API stores many normalized 512-dimensional CLIP embeddings per product. Recognition detects product regions with YOLO, crops each region, embeds each crop, searches across all product reference embeddings with pgvector cosine distance, then maps the best embedding matches back to unique `product_id` results.
 
 ## Run With Docker Compose
 
@@ -52,14 +54,23 @@ Health check:
 curl http://localhost:8000/health
 ```
 
-Register a product reference image. If YOLO detects exactly one object, the API stores an embedding for that crop. If YOLO detects zero objects and `REGISTRATION_FALLBACK_TO_FULL_IMAGE=true`, the API stores a full-image embedding. Images with multiple detected objects are rejected:
+Register a product reference image. This upserts product metadata and inserts a new reference embedding without overwriting existing embeddings for the same product. If YOLO detects exactly one object, the API stores an embedding for that crop. If YOLO detects zero objects and `REGISTRATION_FALLBACK_TO_FULL_IMAGE=true`, the API stores a full-image embedding. Images with multiple detected objects are rejected:
 
 ```bash
 curl -F product_id=CUP-001 \
   -F name="Test Cup" \
   -F inventory_count=25 \
+  -F view_label=front \
   -F file=@cup.jpg \
   http://localhost:8000/api/v1/products
+```
+
+Add another reference image to an existing product:
+
+```bash
+curl -F view_label=back \
+  -F file=@cup-back.jpg \
+  http://localhost:8000/api/v1/products/CUP-001/embeddings
 ```
 
 Recognize all detected products in an image:
@@ -99,6 +110,23 @@ curl -F file=@product.jpg \
   "http://localhost:8000/api/v1/recognize/candidates?top_k=5"
 ```
 
+Candidate responses are unique by product and include the best matched reference embedding:
+
+```json
+{
+  "candidates": [
+    {
+      "product_id": "CUP-001",
+      "name": "Test Cup",
+      "inventory_count": 25,
+      "distance": 0.08,
+      "matched_embedding_id": 12,
+      "matched_view_label": "front"
+    }
+  ]
+}
+```
+
 ## Environment Variables
 
 API service variables in `docker-compose.yml`:
@@ -121,13 +149,22 @@ On FastAPI startup, `init_db()` creates:
 
 - pgvector extension
 - `products` table
-- HNSW cosine index on `products.embedding`
+- `product_embeddings` table
+- HNSW cosine index on `product_embeddings.embedding`
 
 Index name:
 
 ```sql
-products_embedding_hnsw_idx
+product_embeddings_embedding_hnsw_idx
 ```
+
+Older databases that still have a legacy `products.embedding` column are migrated conservatively by copying one `legacy` embedding per product into `product_embeddings` when that product has no reference embeddings yet.
+
+## Reference Image Guidance
+
+One product can have multiple reference images. For normal SKUs, start with 5-10 images per product from different angles and lighting conditions. For small industrial components, use 8-12 images per SKU because shape, surface finish, oil, shadows, and partial occlusion can change the CLIP embedding more than expected.
+
+Recognition searches every stored reference embedding first, then aggregates matches back to unique products by keeping each product's smallest cosine distance. Multiple embeddings improve robustness across views, lighting, packaging states, and close-up model-code photos.
 
 ## Smoke Checks
 
@@ -145,5 +182,6 @@ These checks do not run YOLO or CLIP inference.
 - Product registration rejects multiple detected boxes, but can use full-image fallback when YOLO detects zero boxes.
 - Recognition uses threshold-based unknown handling and does not update inventory quantities automatically.
 - Real accuracy depends on training a one-class product detector later and calibrating the similarity threshold with real images.
+- Current recognition is visual-only: no OCR, no fine-tuning, and no custom YOLO model is included yet.
 - Model weights are downloaded on first use unless already cached in the Docker volume.
 - No auth, Qdrant, Kubernetes, model fine-tuning, or automatic stock mutation is included in this PoC.
