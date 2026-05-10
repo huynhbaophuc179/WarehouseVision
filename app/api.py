@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from .ai_pipeline import (
@@ -16,12 +16,13 @@ from .ai_pipeline import (
     process_registration_image,
 )
 from .database import SessionLocal, init_db
-from .models import Product, ProductEmbedding
+from .models import InventoryTransaction, Product, ProductEmbedding
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
 SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.25"))
+RECOGNITION_CANDIDATE_LIMIT = int(os.getenv("RECOGNITION_CANDIDATE_LIMIT", "3"))
 
 
 @asynccontextmanager
@@ -60,16 +61,52 @@ class ProductEmbeddingResponse(BaseModel):
 
 
 class MultiRecognizeResponse(BaseModel):
+    detection_id: str
     box: list[float]
     product_id: str | None
     name: str | None
     inventory_count: int | None
     distance: float | None
     status: str
+    matched_embedding_id: int | None
+    matched_view_label: str | None
+    candidates: list[CandidateResponse]
 
 
 class RecognizeCandidatesResponse(BaseModel):
     candidates: list[CandidateResponse]
+
+
+class ConfirmedInventoryItem(BaseModel):
+    detection_id: str
+    product_id: str
+    quantity: int
+    action: str
+
+
+class RejectedInventoryItem(BaseModel):
+    detection_id: str
+    reason: str
+
+
+class InventoryConfirmRequest(BaseModel):
+    confirmed_items: list[ConfirmedInventoryItem] = Field(default_factory=list)
+    rejected_items: list[RejectedInventoryItem] = Field(default_factory=list)
+
+
+class AppliedInventoryItem(BaseModel):
+    detection_id: str
+    product_id: str
+    action: str
+    quantity: int
+    quantity_delta: int
+    inventory_count: int
+    transaction_id: int | None
+
+
+class InventoryConfirmResponse(BaseModel):
+    confirmed_items: list[AppliedInventoryItem]
+    rejected_items: list[RejectedInventoryItem]
 
 
 def get_db():
@@ -122,6 +159,21 @@ def _nearest_product_candidates(
             break
 
     return candidates
+
+
+def _candidate_response(
+    product: Product,
+    product_embedding: ProductEmbedding,
+    distance: float,
+) -> CandidateResponse:
+    return CandidateResponse(
+        product_id=product.product_id,
+        name=product.name,
+        inventory_count=product.inventory_count or 0,
+        distance=distance,
+        matched_embedding_id=product_embedding.id,
+        matched_view_label=product_embedding.view_label,
+    )
 
 
 @app.get("/health")
@@ -239,7 +291,12 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
         logger.info("recognize detected_boxes=%s", len(detected_items))
 
         for index, item in enumerate(detected_items, start=1):
-            results = _nearest_product_candidates(db, item["embedding"])
+            detection_id = f"det_{index}"
+            results = _nearest_product_candidates(
+                db,
+                item["embedding"],
+                limit=RECOGNITION_CANDIDATE_LIMIT,
+            )
 
             if not results:
                 logger.info(
@@ -250,17 +307,29 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
                 )
                 response_items.append(
                     MultiRecognizeResponse(
+                        detection_id=detection_id,
                         box=item["box"],
                         product_id=None,
                         name=None,
                         inventory_count=None,
                         distance=None,
                         status="unknown",
+                        matched_embedding_id=None,
+                        matched_view_label=None,
+                        candidates=[],
                     )
                 )
                 continue
 
             product, product_embedding, distance = results[0]
+            candidates = [
+                _candidate_response(
+                    candidate_product,
+                    candidate_embedding,
+                    candidate_distance,
+                )
+                for candidate_product, candidate_embedding, candidate_distance in results
+            ]
 
             if distance > SIMILARITY_THRESHOLD:
                 logger.info(
@@ -271,12 +340,16 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
                 )
                 response_items.append(
                     MultiRecognizeResponse(
+                        detection_id=detection_id,
                         box=item["box"],
                         product_id=None,
                         name=None,
                         inventory_count=None,
                         distance=distance,
                         status="unknown",
+                        matched_embedding_id=product_embedding.id,
+                        matched_view_label=product_embedding.view_label,
+                        candidates=candidates,
                     )
                 )
                 continue
@@ -289,12 +362,16 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
             )
             response_items.append(
                 MultiRecognizeResponse(
+                    detection_id=detection_id,
                     box=item["box"],
                     product_id=product.product_id,
                     name=product.name,
-                    inventory_count=product.inventory_count,
+                    inventory_count=product.inventory_count or 0,
                     distance=distance,
                     status="recognized",
+                    matched_embedding_id=product_embedding.id,
+                    matched_view_label=product_embedding.view_label,
+                    candidates=candidates,
                 )
             )
 
@@ -322,17 +399,95 @@ async def recognize_candidates(
 
         return RecognizeCandidatesResponse(
             candidates=[
-                CandidateResponse(
-                    product_id=product.product_id,
-                    name=product.name,
-                    inventory_count=product.inventory_count,
-                    distance=distance,
-                    matched_embedding_id=product_embedding.id,
-                    matched_view_label=product_embedding.view_label,
-                )
+                _candidate_response(product, product_embedding, distance)
                 for product, product_embedding, distance in results
             ]
         )
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
+
+@app.post("/api/v1/inventory/confirm", response_model=InventoryConfirmResponse)
+async def confirm_inventory(
+    payload: InventoryConfirmRequest,
+    db: Session = Depends(get_db),
+):
+    valid_actions = {"count", "stock_in", "stock_out", "adjustment"}
+    applied_items = []
+
+    try:
+        for item in payload.confirmed_items:
+            if item.action not in valid_actions:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid inventory action: {item.action}",
+                )
+
+            if item.quantity < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Quantity must be greater than or equal to zero",
+                )
+
+            product = db.get(Product, item.product_id)
+
+            if product is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Product not found: {item.product_id}",
+                )
+
+            current_count = product.inventory_count or 0
+            quantity_delta = 0
+
+            if item.action == "stock_in":
+                quantity_delta = item.quantity
+                product.inventory_count = current_count + item.quantity
+            elif item.action == "stock_out":
+                if item.quantity > current_count:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Not enough stock for {item.product_id}: "
+                            f"current={current_count}, requested={item.quantity}"
+                        ),
+                    )
+
+                quantity_delta = -item.quantity
+                product.inventory_count = current_count - item.quantity
+            elif item.action == "adjustment":
+                quantity_delta = item.quantity - current_count
+                product.inventory_count = item.quantity
+
+            transaction = InventoryTransaction(
+                product_id=product.product_id,
+                quantity_delta=quantity_delta,
+                action_type=item.action,
+                source="human_confirmation",
+                detection_id=item.detection_id,
+            )
+            db.add(transaction)
+            db.flush()
+
+            applied_items.append(
+                AppliedInventoryItem(
+                    detection_id=item.detection_id,
+                    product_id=product.product_id,
+                    action=item.action,
+                    quantity=item.quantity,
+                    quantity_delta=quantity_delta,
+                    inventory_count=product.inventory_count or 0,
+                    transaction_id=transaction.id,
+                )
+            )
+
+        db.commit()
+
+        return InventoryConfirmResponse(
+            confirmed_items=applied_items,
+            rejected_items=payload.rejected_items,
+        )
+    except Exception:
+        db.rollback()
+        raise

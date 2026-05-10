@@ -1,5 +1,8 @@
+from io import BytesIO
+
 import requests
 import streamlit as st
+from PIL import Image, ImageDraw
 
 API_URL = "http://api:8000/api/v1"
 
@@ -38,6 +41,109 @@ def build_batch_label(prefix, index):
     return f"{clean_prefix}_{index}"
 
 
+def draw_annotated_image(image_bytes, detections):
+    image = Image.open(BytesIO(image_bytes)).convert("RGB")
+    draw = ImageDraw.Draw(image)
+
+    for index, item in enumerate(detections, start=1):
+        box = item["box"]
+        left, top, right, bottom = [float(value) for value in box]
+        color = "#16a34a" if item["status"] == "recognized" else "#f97316"
+        label = str(index)
+
+        draw.rectangle((left, top, right, bottom), outline=color, width=4)
+        label_box = (left, max(0, top - 24), left + 34, top)
+        draw.rectangle(label_box, fill=color)
+        draw.text((left + 8, max(0, top - 22)), label, fill="white")
+
+    return image
+
+
+def format_distance(distance):
+    return f"{distance:.4f}" if distance is not None else "-"
+
+
+def detection_table_rows(results):
+    rows = []
+    for index, item in enumerate(results, start=1):
+        rows.append(
+            {
+                "STT": index,
+                "Detection ID": item["detection_id"],
+                "Box": ", ".join(f"{value:.1f}" for value in item["box"]),
+                "Trạng thái": item["status"],
+                "Mã SP": item["product_id"] or "-",
+                "Tên": item["name"] or "-",
+                "Tồn kho": item["inventory_count"]
+                if item["inventory_count"] is not None
+                else "-",
+                "Độ sai lệch": format_distance(item["distance"]),
+                "Embedding": item.get("matched_embedding_id") or "-",
+                "View": item.get("matched_view_label") or "-",
+            }
+        )
+
+    return rows
+
+
+def submit_inventory_confirmation(results):
+    confirmed_items = []
+    rejected_items = []
+
+    for item in results:
+        detection_id = item["detection_id"]
+        decision = st.session_state.get(f"decision_{detection_id}", "confirm")
+
+        if decision == "confirm":
+            if not item.get("product_id"):
+                rejected_items.append(
+                    {"detection_id": detection_id, "reason": "no_predicted_product"}
+                )
+                continue
+
+            confirmed_items.append(
+                {
+                    "detection_id": detection_id,
+                    "product_id": item["product_id"],
+                    "quantity": int(st.session_state.get(f"quantity_{detection_id}", 0)),
+                    "action": st.session_state.get(f"action_{detection_id}", "count"),
+                }
+            )
+        elif decision == "manual":
+            manual_product_id = st.session_state.get(f"manual_product_{detection_id}", "")
+            if manual_product_id.strip():
+                confirmed_items.append(
+                    {
+                        "detection_id": detection_id,
+                        "product_id": manual_product_id.strip(),
+                        "quantity": int(
+                            st.session_state.get(f"quantity_{detection_id}", 0)
+                        ),
+                        "action": st.session_state.get(f"action_{detection_id}", "count"),
+                    }
+                )
+            else:
+                rejected_items.append(
+                    {"detection_id": detection_id, "reason": "missing_manual_product_id"}
+                )
+        elif decision == "unknown":
+            rejected_items.append({"detection_id": detection_id, "reason": "marked_unknown"})
+        else:
+            reason = st.session_state.get(f"reject_reason_{detection_id}", "").strip()
+            rejected_items.append(
+                {"detection_id": detection_id, "reason": reason or "rejected_by_user"}
+            )
+
+    return requests.post(
+        f"{API_URL}/inventory/confirm",
+        json={
+            "confirmed_items": confirmed_items,
+            "rejected_items": rejected_items,
+        },
+        timeout=120,
+    )
+
+
 if choice == "🔎 Nhận diện sản phẩm":
     st.header("🔎 Nhận diện & Check tồn kho")
     camera_file = st.camera_input("Live Camera")
@@ -48,6 +154,15 @@ if choice == "🔎 Nhận diện sản phẩm":
     selected_file = camera_file or uploaded_file
 
     if selected_file:
+        selected_bytes = selected_file.getvalue()
+        selected_key = f"{selected_file.name}:{len(selected_bytes)}"
+
+        if st.session_state.get("recognition_input_key") != selected_key:
+            st.session_state["recognition_input_key"] = selected_key
+            st.session_state.pop("recognition_results", None)
+            st.session_state.pop("recognition_image_bytes", None)
+            st.session_state.pop("inventory_confirmation_response", None)
+
         st.image(selected_file, caption="Ảnh đầu vào", width=300)
 
         if st.button("Bắt đầu nhận diện"):
@@ -63,6 +178,9 @@ if choice == "🔎 Nhận diện sản phẩm":
                 else:
                     if response.status_code == 200:
                         results = response.json()
+                        st.session_state["recognition_results"] = results
+                        st.session_state["recognition_image_bytes"] = selected_bytes
+                        st.session_state.pop("inventory_confirmation_response", None)
 
                         if not results:
                             st.warning("Không phát hiện sản phẩm trong ảnh")
@@ -74,32 +192,141 @@ if choice == "🔎 Nhận diện sản phẩm":
                                 f"Đã xử lý {len(results)} vùng sản phẩm, "
                                 f"nhận diện được {recognized_count} sản phẩm."
                             )
-
-                            rows = []
-                            for index, item in enumerate(results, start=1):
-                                rows.append(
-                                    {
-                                        "STT": index,
-                                        "Box": ", ".join(
-                                            f"{value:.1f}" for value in item["box"]
-                                        ),
-                                        "Trạng thái": item["status"],
-                                        "Mã SP": item["product_id"] or "-",
-                                        "Tên": item["name"] or "-",
-                                        "Tồn kho": item["inventory_count"]
-                                        if item["inventory_count"] is not None
-                                        else "-",
-                                        "Độ sai lệch": f"{item['distance']:.4f}"
-                                        if item["distance"] is not None
-                                        else "-",
-                                    }
-                                )
-
-                            st.dataframe(rows, use_container_width=True, hide_index=True)
                     elif response.status_code == 404:
                         st.warning("Không tìm thấy sản phẩm phù hợp")
                     else:
                         st.error(f"Lỗi khi nhận diện sản phẩm: {response.text}")
+
+    results = st.session_state.get("recognition_results")
+    image_bytes = st.session_state.get("recognition_image_bytes")
+
+    if results and image_bytes:
+        st.subheader("Kết quả gợi ý từ AI")
+        st.image(
+            draw_annotated_image(image_bytes, results),
+            caption="Ảnh đã đánh dấu vùng phát hiện",
+            use_container_width=True,
+        )
+        st.dataframe(detection_table_rows(results), use_container_width=True, hide_index=True)
+
+        st.subheader("Xác nhận của người dùng")
+        for index, item in enumerate(results, start=1):
+            detection_id = item["detection_id"]
+            title = f"{index}. {detection_id} - {item.get('name') or 'Chưa xác định'}"
+            with st.expander(title, expanded=True):
+                st.write(
+                    {
+                        "product_id": item.get("product_id"),
+                        "status": item["status"],
+                        "distance": format_distance(item.get("distance")),
+                        "matched_embedding_id": item.get("matched_embedding_id"),
+                        "matched_view_label": item.get("matched_view_label"),
+                    }
+                )
+
+                candidates = item.get("candidates") or []
+                if candidates:
+                    st.dataframe(
+                        [
+                            {
+                                "product_id": candidate["product_id"],
+                                "name": candidate["name"],
+                                "inventory_count": candidate["inventory_count"],
+                                "distance": format_distance(candidate["distance"]),
+                                "embedding": candidate["matched_embedding_id"],
+                                "view": candidate["matched_view_label"] or "-",
+                            }
+                            for candidate in candidates
+                        ],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                decision_options = [
+                    "confirm",
+                    "manual",
+                    "unknown",
+                    "reject",
+                ]
+                decision_labels = {
+                    "confirm": "Xác nhận đúng",
+                    "manual": "Chọn product_id khác",
+                    "unknown": "Đánh dấu unknown",
+                    "reject": "Loại bỏ detection",
+                }
+                if not item.get("product_id"):
+                    decision_options = ["unknown", "manual", "reject"]
+
+                st.radio(
+                    "Quyết định",
+                    decision_options,
+                    format_func=lambda value: decision_labels[value],
+                    horizontal=True,
+                    key=f"decision_{detection_id}",
+                )
+
+                decision = st.session_state.get(
+                    f"decision_{detection_id}",
+                    decision_options[0],
+                )
+
+                if decision == "manual":
+                    st.text_input(
+                        "Nhập product_id thay thế",
+                        key=f"manual_product_{detection_id}",
+                    )
+
+                if decision in {"confirm", "manual"}:
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.number_input(
+                            "Số lượng",
+                            min_value=0,
+                            value=1,
+                            step=1,
+                            key=f"quantity_{detection_id}",
+                        )
+                    with col2:
+                        st.selectbox(
+                            "Hành động tồn kho",
+                            ["count", "stock_in", "stock_out", "adjustment"],
+                            key=f"action_{detection_id}",
+                        )
+
+                if decision == "reject":
+                    st.text_input(
+                        "Lý do loại bỏ",
+                        key=f"reject_reason_{detection_id}",
+                    )
+
+        if st.button("Confirm inventory result"):
+            try:
+                confirm_response = submit_inventory_confirmation(results)
+            except requests.RequestException as exc:
+                st.error(f"Không kết nối được API xác nhận: {exc}")
+            else:
+                if confirm_response.status_code == 200:
+                    payload = confirm_response.json()
+                    st.session_state["inventory_confirmation_response"] = payload
+                    st.success("Đã ghi nhận xác nhận của người dùng.")
+                else:
+                    st.error(f"Lỗi khi xác nhận tồn kho: {confirm_response.text}")
+
+        if st.session_state.get("inventory_confirmation_response"):
+            st.subheader("Kết quả xác nhận")
+            confirmation = st.session_state["inventory_confirmation_response"]
+            if confirmation.get("confirmed_items"):
+                st.dataframe(
+                    confirmation["confirmed_items"],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            if confirmation.get("rejected_items"):
+                st.dataframe(
+                    confirmation["rejected_items"],
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
 elif choice == "📦 Đăng ký sản phẩm mới":
     st.header("📦 Đăng ký vào Database")

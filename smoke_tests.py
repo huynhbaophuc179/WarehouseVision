@@ -1,5 +1,5 @@
 from app.api import app
-from app.models import ProductEmbedding
+from app.models import InventoryTransaction, ProductEmbedding
 
 
 def test_required_routes_exist() -> None:
@@ -10,6 +10,7 @@ def test_required_routes_exist() -> None:
         "/api/v1/products/{product_id}/embeddings",
         "/api/v1/recognize",
         "/api/v1/recognize/candidates",
+        "/api/v1/inventory/confirm",
     }
 
     missing_paths = required_paths - route_paths
@@ -25,8 +26,13 @@ def test_product_embedding_dimension() -> None:
     assert getattr(embedding_type, "dim", None) == 512
 
 
+def test_inventory_transaction_model_exists() -> None:
+    assert InventoryTransaction.__tablename__ == "inventory_transactions"
+
+
 if __name__ == "__main__":
     test_required_routes_exist()
     test_product_embedding_model_exists()
     test_product_embedding_dimension()
+    test_inventory_transaction_model_exists()
     print("Smoke checks passed")

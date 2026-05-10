@@ -42,3 +42,22 @@ class ProductEmbedding(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     product = relationship("Product", back_populates="embeddings")
+
+
+class InventoryTransaction(Base):
+    __tablename__ = "inventory_transactions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    product_id = Column(
+        String(50),
+        ForeignKey("products.product_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    quantity_delta = Column(Integer, nullable=False)
+    action_type = Column(String(50), nullable=False)
+    source = Column(String(100), nullable=False, default="human_confirmation")
+    detection_id = Column(String(100), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    product = relationship("Product")

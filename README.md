@@ -10,10 +10,11 @@ Self-hosted visual inventory proof of concept for registering products from imag
 - SQLAlchemy models:
   - `Product(product_id, name, inventory_count, created_at, updated_at)`
   - `ProductEmbedding(id, product_id, embedding, image_path, view_label, created_at)`
+  - `InventoryTransaction(id, product_id, quantity_delta, action_type, source, detection_id, created_at)`
 - Streamlit frontend in `frontend/main.py`
 - Docker Compose starts `db`, `api`, and `frontend`
 
-The API stores many normalized 512-dimensional CLIP embeddings per product. Recognition detects product regions with YOLO, crops each region, embeds each crop, searches across all product reference embeddings with pgvector cosine distance, then maps the best embedding matches back to unique `product_id` results.
+The API stores many normalized 512-dimensional CLIP embeddings per product. Recognition detects product regions with YOLO, crops each region, embeds each crop, searches across all product reference embeddings with pgvector cosine distance, then maps the best embedding matches back to unique `product_id` results. Recognition is only a suggestion: the frontend shows bounding boxes for review, and inventory is changed only after explicit human confirmation.
 
 ## Run With Docker Compose
 
@@ -87,22 +88,71 @@ Example response:
 ```json
 [
   {
+    "detection_id": "det_1",
     "box": [10.0, 20.0, 140.0, 180.0],
     "product_id": "CUP-001",
     "name": "Test Cup",
     "inventory_count": 25,
     "distance": 0.08,
-    "status": "recognized"
+    "status": "recognized",
+    "matched_embedding_id": 12,
+    "matched_view_label": "front",
+    "candidates": [
+      {
+        "product_id": "CUP-001",
+        "name": "Test Cup",
+        "inventory_count": 25,
+        "distance": 0.08,
+        "matched_embedding_id": 12,
+        "matched_view_label": "front"
+      }
+    ]
   },
   {
+    "detection_id": "det_2",
     "box": [180.0, 40.0, 260.0, 150.0],
     "product_id": null,
     "name": null,
     "inventory_count": null,
     "distance": 0.41,
-    "status": "unknown"
+    "status": "unknown",
+    "matched_embedding_id": 17,
+    "matched_view_label": "side",
+    "candidates": [
+      {
+        "product_id": "ALT-001",
+        "name": "Closest visual candidate",
+        "inventory_count": 5,
+        "distance": 0.41,
+        "matched_embedding_id": 17,
+        "matched_view_label": "side"
+      }
+    ]
   }
 ]
+```
+
+Confirm reviewed inventory results. `count` records the confirmation without changing stock; `stock_in`, `stock_out`, and `adjustment` update `inventory_count` only after the user clicks the confirmation button in the frontend:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/inventory/confirm \
+  -H "Content-Type: application/json" \
+  -d '{
+    "confirmed_items": [
+      {
+        "detection_id": "det_1",
+        "product_id": "CUP-001",
+        "quantity": 2,
+        "action": "stock_in"
+      }
+    ],
+    "rejected_items": [
+      {
+        "detection_id": "det_2",
+        "reason": "wrong part"
+      }
+    ]
+  }'
 ```
 
 Get top candidate matches for a full image:
@@ -138,6 +188,7 @@ API service variables in `docker-compose.yml`:
 - `YOLO_MODEL_PATH`: YOLO model path, default `yolov8n.pt`.
 - `YOLO_CLASSES`: comma-separated YOLO class IDs to detect. Use an empty value for the generic PoC so YOLO is not restricted to a few COCO classes.
 - `CLIP_MODEL_NAME`: Hugging Face CLIP model name, default `openai/clip-vit-base-patch32`.
+- `RECOGNITION_CANDIDATE_LIMIT`: number of unique product candidates to include per detected box, default `3`.
 - `REGISTRATION_FALLBACK_TO_FULL_IMAGE`: when `true`, product registration embeds the full image if YOLO detects zero boxes.
 - `LOG_LEVEL`: Python logging level for the API, default `INFO`.
 
@@ -152,6 +203,7 @@ On FastAPI startup, `init_db()` creates:
 - pgvector extension
 - `products` table
 - `product_embeddings` table
+- `inventory_transactions` table
 - HNSW cosine index on `product_embeddings.embedding`
 
 Index name:
@@ -168,6 +220,12 @@ One product can have multiple reference images. For normal SKUs, start with 5-10
 
 Recognition searches every stored reference embedding first, then aggregates matches back to unique products by keeping each product's smallest cosine distance. Multiple embeddings improve robustness across views, lighting, packaging states, and close-up model-code photos.
 
+## Human Confirmation Workflow
+
+The Streamlit recognition screen draws bounding boxes over the uploaded image and labels every detected region with an index. Each detection can be confirmed, rejected, marked as unknown, or assigned to a manually entered `product_id`. Quantity and action are collected only for confirmed items.
+
+AI recognition never updates stock by itself. The frontend sends reviewed results to `POST /api/v1/inventory/confirm` only when the user clicks `Confirm inventory result`. Rejected detections are returned in the confirmation response and can be collected later as useful examples for improving detector or embedding quality.
+
 ## Smoke Checks
 
 Run lightweight import/route checks inside the API container:
@@ -182,7 +240,7 @@ These checks do not run YOLO or CLIP inference.
 
 - The default `yolov8n.pt` model is trained on COCO classes, not industrial inventory parts.
 - Product registration rejects multiple detected boxes, but can use full-image fallback when YOLO detects zero boxes.
-- Recognition uses threshold-based unknown handling and does not update inventory quantities automatically.
+- Recognition uses threshold-based unknown handling and does not update inventory quantities without user confirmation.
 - Real accuracy depends on training a one-class product detector later and calibrating the similarity threshold with real images.
 - Current recognition is visual-only: no OCR, no fine-tuning, and no custom YOLO model is included yet.
 - Model weights are downloaded on first use unless already cached in the Docker volume.
