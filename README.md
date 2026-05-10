@@ -196,7 +196,10 @@ Candidate responses are unique by product and include the best matched reference
 API service variables in `docker-compose.yml`:
 
 - `DATABASE_URL`: SQLAlchemy connection string for PostgreSQL.
-- `SIMILARITY_THRESHOLD`: maximum cosine distance for a recognized result. Larger distances become `unknown`.
+- `DETECTOR_RECOGNIZED_CONFIDENCE_THRESHOLD`: minimum YOLO confidence for a direct `recognized` result, default `0.60`.
+- `DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD`: minimum YOLO confidence before recognition is even considered, default `0.45`. Lower-confidence crops become `unknown`.
+- `SIMILARITY_RECOGNIZED_THRESHOLD`: maximum top-1 cosine distance for a direct `recognized` result, default `0.15`.
+- `SIMILARITY_UNKNOWN_THRESHOLD`: maximum top-1 cosine distance before a crop becomes `unknown`, default `0.22`.
 - `SIMILARITY_MARGIN_THRESHOLD`: minimum gap between top-1 and top-2 cosine distance before a result is considered safely recognized, default `0.03`. Smaller gaps become `uncertain`.
 - `YOLO_MODEL_PATH`: YOLO model path, default `yolov8n.pt`.
 - `YOLO_CLASSES`: comma-separated YOLO class IDs to detect. Use an empty value for the generic PoC so YOLO is not restricted to a few COCO classes.
@@ -209,7 +212,7 @@ API service variables in `docker-compose.yml`:
 
 For this generic PoC, keep `YOLO_CLASSES=""`. In production, train or provide a one-class YOLO model for `product` detection, then calibrate `YOLO_CLASSES` and detection thresholds around real warehouse images.
 
-`SIMILARITY_THRESHOLD` and `SIMILARITY_MARGIN_THRESHOLD` must be calibrated with real product photos. If wrong boxes are recognized as a known SKU, lower `SIMILARITY_THRESHOLD` or raise `SIMILARITY_MARGIN_THRESHOLD`. If valid products are often missed, raise `SIMILARITY_THRESHOLD` gradually while watching false positives.
+Recognition thresholds must be calibrated with real product photos. A direct `recognized` result now requires both detector confidence and visual similarity confidence. If wrong boxes are recognized as a known SKU, raise `DETECTOR_RECOGNIZED_CONFIDENCE_THRESHOLD`, lower `SIMILARITY_RECOGNIZED_THRESHOLD`, lower `SIMILARITY_UNKNOWN_THRESHOLD`, or raise `SIMILARITY_MARGIN_THRESHOLD`. If valid products are often missed, loosen these gradually while watching false positives.
 
 ## Database Initialization
 
@@ -237,15 +240,15 @@ Recognition searches every stored reference embedding first, then aggregates mat
 
 Recognition statuses:
 
-- `recognized`: best candidate is below `SIMILARITY_THRESHOLD` and separated from top-2 by at least `SIMILARITY_MARGIN_THRESHOLD`.
-- `uncertain`: best candidate is close enough, but top-2 is too close. The frontend shows this as `Cần kiểm tra` and defaults toward manual review.
-- `unknown`: no candidate, distance is too high, or the crop is too small/invalid.
+- `recognized`: detector confidence is at least `DETECTOR_RECOGNIZED_CONFIDENCE_THRESHOLD`, top-1 distance is at or below `SIMILARITY_RECOGNIZED_THRESHOLD`, and top-2 is separated by at least `SIMILARITY_MARGIN_THRESHOLD`.
+- `uncertain`: the crop is plausible but not safe enough for direct recognition. This includes medium detector confidence, top-1 distance between recognized and unknown thresholds, or a small top-1/top-2 margin. The frontend shows this as `Cần kiểm tra` and defaults toward manual review.
+- `unknown`: no candidate, detector confidence is below `DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD`, distance is above `SIMILARITY_UNKNOWN_THRESHOLD`, or the crop is too small/invalid.
 
 ## Debugging False Positives
 
-Use the crop previews in the frontend recognition cards first. If a wrong product such as `nút xanh 1` appears repeatedly, check whether the crop preview is actually the target product or a small misleading part of the scene. The response also exposes `detector_confidence`, `top1_distance`, `top2_distance`, and `distance_margin` so you can see whether CLIP strongly preferred one SKU or produced an ambiguous match.
+Use the crop previews in the frontend recognition cards first. If a wrong product such as `nút xanh 1` appears repeatedly, check whether the crop preview is actually the target product or a small misleading part of the scene. Low-confidence crops such as wires, connectors, reflections, or partial fragments should be rejected or marked unknown, even when their CLIP distance looks close. The response also exposes `detector_confidence`, `top1_distance`, `top2_distance`, and `distance_margin` so you can see whether CLIP strongly preferred one SKU or produced an ambiguous match.
 
-For detector problems, tune YOLO classes/model later. For matching problems, tune `SIMILARITY_THRESHOLD`, `SIMILARITY_MARGIN_THRESHOLD`, and collect more reference images from the real product views.
+For detector problems, tune YOLO classes/model later. For matching problems, tune detector confidence thresholds, similarity thresholds, margin threshold, and collect more reference images from the real product views.
 
 ## Human Confirmation Workflow
 

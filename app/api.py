@@ -21,7 +21,16 @@ from .models import InventoryTransaction, Product, ProductEmbedding
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
-SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.25"))
+DETECTOR_RECOGNIZED_CONFIDENCE_THRESHOLD = float(
+    os.getenv("DETECTOR_RECOGNIZED_CONFIDENCE_THRESHOLD", "0.60")
+)
+DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD = float(
+    os.getenv("DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD", "0.45")
+)
+SIMILARITY_RECOGNIZED_THRESHOLD = float(
+    os.getenv("SIMILARITY_RECOGNIZED_THRESHOLD", "0.15")
+)
+SIMILARITY_UNKNOWN_THRESHOLD = float(os.getenv("SIMILARITY_UNKNOWN_THRESHOLD", "0.22"))
 SIMILARITY_MARGIN_THRESHOLD = float(os.getenv("SIMILARITY_MARGIN_THRESHOLD", "0.03"))
 RECOGNITION_CANDIDATE_LIMIT = int(os.getenv("RECOGNITION_CANDIDATE_LIMIT", "3"))
 
@@ -370,7 +379,32 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
                 "candidates": candidates,
             }
 
-            if distance > SIMILARITY_THRESHOLD:
+            detector_confidence = item.get("detector_confidence")
+            is_low_detector_confidence = (
+                detector_confidence is not None
+                and detector_confidence < DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD
+            )
+            is_medium_detector_confidence = (
+                detector_confidence is not None
+                and detector_confidence < DETECTOR_RECOGNIZED_CONFIDENCE_THRESHOLD
+            )
+
+            if is_low_detector_confidence:
+                logger.info(
+                    "recognize item=%s detector_confidence=%.6f status=%s",
+                    index,
+                    detector_confidence,
+                    "unknown",
+                )
+                response_items.append(
+                    MultiRecognizeResponse(
+                        **match_fields,
+                        status="unknown",
+                    )
+                )
+                continue
+
+            if distance > SIMILARITY_UNKNOWN_THRESHOLD:
                 logger.info(
                     "recognize item=%s best_distance=%.6f status=%s",
                     index,
@@ -385,10 +419,47 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
                 )
                 continue
 
-            if (
-                distance_margin is not None
-                and distance_margin < SIMILARITY_MARGIN_THRESHOLD
-            ):
+            if is_medium_detector_confidence:
+                logger.info(
+                    "recognize item=%s detector_confidence=%.6f status=%s",
+                    index,
+                    detector_confidence,
+                    "uncertain",
+                )
+                response_items.append(
+                    MultiRecognizeResponse(
+                        **{
+                            **match_fields,
+                            "product_id": product.product_id,
+                            "name": product.name,
+                            "inventory_count": product.inventory_count or 0,
+                            "status": "uncertain",
+                        }
+                    )
+                )
+                continue
+
+            if distance > SIMILARITY_RECOGNIZED_THRESHOLD:
+                logger.info(
+                    "recognize item=%s best_distance=%.6f status=%s",
+                    index,
+                    distance,
+                    "uncertain",
+                )
+                response_items.append(
+                    MultiRecognizeResponse(
+                        **{
+                            **match_fields,
+                            "product_id": product.product_id,
+                            "name": product.name,
+                            "inventory_count": product.inventory_count or 0,
+                            "status": "uncertain",
+                        }
+                    )
+                )
+                continue
+
+            if distance_margin is not None and distance_margin < SIMILARITY_MARGIN_THRESHOLD:
                 logger.info(
                     "recognize item=%s best_distance=%.6f margin=%.6f status=%s",
                     index,

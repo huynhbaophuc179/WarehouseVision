@@ -1,4 +1,5 @@
 import base64
+import os
 from io import BytesIO
 
 import requests
@@ -6,6 +7,9 @@ import streamlit as st
 from PIL import Image, ImageDraw
 
 API_URL = "http://api:8000/api/v1"
+DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD = float(
+    os.getenv("DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD", "0.45")
+)
 
 st.set_page_config(page_title="AI Inventory System", layout="wide")
 st.title("🛡️ Hệ thống Nhận diện & Quản lý Tồn kho AI")
@@ -127,6 +131,19 @@ def duplicate_product_ids(results):
     return [product_id for product_id, count in counts.items() if count > 1]
 
 
+def clear_confirmation_state():
+    prefixes = (
+        "decision_",
+        "manual_product_",
+        "quantity_",
+        "action_",
+        "reject_reason_",
+    )
+    for key in list(st.session_state.keys()):
+        if key.startswith(prefixes):
+            st.session_state.pop(key, None)
+
+
 def submit_inventory_confirmation(results):
     confirmed_items = []
     rejected_items = []
@@ -203,6 +220,7 @@ if choice == "🔎 Nhận diện sản phẩm":
             st.session_state.pop("recognition_results", None)
             st.session_state.pop("recognition_image_bytes", None)
             st.session_state.pop("inventory_confirmation_response", None)
+            clear_confirmation_state()
 
         st.image(selected_file, caption="Ảnh đầu vào", width=300)
 
@@ -219,6 +237,7 @@ if choice == "🔎 Nhận diện sản phẩm":
                 else:
                     if response.status_code == 200:
                         results = response.json()
+                        clear_confirmation_state()
                         st.session_state["recognition_results"] = results
                         st.session_state["recognition_image_bytes"] = selected_bytes
                         st.session_state.pop("inventory_confirmation_response", None)
@@ -295,6 +314,15 @@ if choice == "🔎 Nhận diện sản phẩm":
 
                     if item["status"] == "uncertain":
                         st.warning("Cần kiểm tra: top candidate chưa đủ tách biệt.")
+                    detector_confidence = item.get("detector_confidence")
+                    if (
+                        detector_confidence is not None
+                        and detector_confidence < DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD
+                    ):
+                        st.warning(
+                            "Detector confidence thấp, crop này có thể không phải "
+                            "sản phẩm hợp lệ."
+                        )
 
                 candidates = item.get("candidates") or []
                 if candidates:

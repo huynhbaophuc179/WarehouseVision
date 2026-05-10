@@ -19,7 +19,10 @@ services:
     build: .
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/visual_inventory
-      SIMILARITY_THRESHOLD: "0.25"
+      DETECTOR_RECOGNIZED_CONFIDENCE_THRESHOLD: "0.60"
+      DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD: "0.45"
+      SIMILARITY_RECOGNIZED_THRESHOLD: "0.15"
+      SIMILARITY_UNKNOWN_THRESHOLD: "0.22"
       SIMILARITY_MARGIN_THRESHOLD: "0.03"
       YOLO_MODEL_PATH: yolov8n.pt
       YOLO_CLASSES: ""
@@ -38,6 +41,8 @@ services:
 
   frontend:
     build: ./frontend
+    environment:
+      DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD: "0.45"
     ports:
       - "8501:8501"
     depends_on:
