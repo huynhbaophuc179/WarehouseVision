@@ -70,7 +70,7 @@ class MultiRecognizeResponse(BaseModel):
     status: str
     matched_embedding_id: int | None
     matched_view_label: str | None
-    candidates: list[CandidateResponse]
+    candidates: list[CandidateResponse] = Field(default_factory=list)
 
 
 class RecognizeCandidatesResponse(BaseModel):
@@ -94,19 +94,9 @@ class InventoryConfirmRequest(BaseModel):
     rejected_items: list[RejectedInventoryItem] = Field(default_factory=list)
 
 
-class AppliedInventoryItem(BaseModel):
-    detection_id: str
-    product_id: str
-    action: str
-    quantity: int
-    quantity_delta: int
-    inventory_count: int
-    transaction_id: int | None
-
-
 class InventoryConfirmResponse(BaseModel):
-    confirmed_items: list[AppliedInventoryItem]
-    rejected_items: list[RejectedInventoryItem]
+    confirmed_items: list[dict]
+    rejected_items: list[dict]
 
 
 def get_db():
@@ -464,29 +454,32 @@ async def confirm_inventory(
                 product_id=product.product_id,
                 quantity_delta=quantity_delta,
                 action_type=item.action,
-                source="human_confirmation",
+                source="user_confirmed",
                 detection_id=item.detection_id,
             )
             db.add(transaction)
             db.flush()
 
             applied_items.append(
-                AppliedInventoryItem(
-                    detection_id=item.detection_id,
-                    product_id=product.product_id,
-                    action=item.action,
-                    quantity=item.quantity,
-                    quantity_delta=quantity_delta,
-                    inventory_count=product.inventory_count or 0,
-                    transaction_id=transaction.id,
-                )
+                {
+                    "detection_id": item.detection_id,
+                    "product_id": product.product_id,
+                    "action": item.action,
+                    "quantity": item.quantity,
+                    "quantity_delta": quantity_delta,
+                    "inventory_count": product.inventory_count or 0,
+                    "transaction_id": transaction.id,
+                }
             )
 
         db.commit()
 
         return InventoryConfirmResponse(
             confirmed_items=applied_items,
-            rejected_items=payload.rejected_items,
+            rejected_items=[
+                {"detection_id": item.detection_id, "reason": item.reason}
+                for item in payload.rejected_items
+            ],
         )
     except Exception:
         db.rollback()
