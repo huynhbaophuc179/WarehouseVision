@@ -34,6 +34,8 @@ Services:
 - Streamlit frontend: http://localhost:8501
 - PostgreSQL: localhost:5432
 
+The Streamlit frontend supports single-image product creation and batch upload of additional reference images for the same SKU. Batch uploads auto-generate view labels such as `view_1`, `view_2`, or `front_1`, `front_2` when a common prefix is provided.
+
 Stop services:
 
 ```bash
@@ -162,7 +164,7 @@ Older databases that still have a legacy `products.embedding` column are migrate
 
 ## Reference Image Guidance
 
-One product can have multiple reference images. For normal SKUs, start with 5-10 images per product from different angles and lighting conditions. For small industrial components, use 8-12 images per SKU because shape, surface finish, oil, shadows, and partial occlusion can change the CLIP embedding more than expected.
+One product can have multiple reference images. For normal SKUs, start with 5-10 images per product from different angles and lighting conditions. For small industrial components, use 8-12 images per SKU because shape, surface finish, oil, shadows, and partial occlusion can change the CLIP embedding more than expected. The frontend batch uploader is intended to make collecting those 5-12 reference images practical during registration.
 
 Recognition searches every stored reference embedding first, then aggregates matches back to unique products by keeping each product's smallest cosine distance. Multiple embeddings improve robustness across views, lighting, packaging states, and close-up model-code photos.
 
