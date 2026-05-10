@@ -1,4 +1,6 @@
+import base64
 import os
+from io import BytesIO
 from functools import lru_cache
 
 import torch
@@ -9,6 +11,8 @@ from ultralytics import YOLO
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "yolov8n.pt")
 CLIP_MODEL_NAME = os.getenv("CLIP_MODEL_NAME", "openai/clip-vit-base-patch32")
+MIN_CROP_DIMENSION_PX = int(os.getenv("MIN_CROP_DIMENSION_PX", "32"))
+MIN_CROP_AREA_RATIO = float(os.getenv("MIN_CROP_AREA_RATIO", "0.001"))
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -44,7 +48,7 @@ class RegistrationImageError(ValueError):
     pass
 
 
-def _detect_boxes(img: Image.Image) -> list[list[float]]:
+def _detect_detections(img: Image.Image) -> list[dict]:
     yolo_model = _load_yolo_model()
     results = yolo_model.predict(img, classes=_parse_yolo_classes(), verbose=False)
 
@@ -52,9 +56,15 @@ def _detect_boxes(img: Image.Image) -> list[list[float]]:
         return []
 
     width, height = img.size
-    boxes = []
+    detections = []
+    result_boxes = results[0].boxes
+    confidences = (
+        result_boxes.conf.tolist()
+        if getattr(result_boxes, "conf", None) is not None
+        else [None] * len(result_boxes.xyxy)
+    )
 
-    for box in results[0].boxes.xyxy.tolist():
+    for box, confidence in zip(result_boxes.xyxy.tolist(), confidences):
         left, top, right, bottom = box
         left = max(0.0, min(float(left), float(width)))
         top = max(0.0, min(float(top), float(height)))
@@ -62,13 +72,53 @@ def _detect_boxes(img: Image.Image) -> list[list[float]]:
         bottom = max(0.0, min(float(bottom), float(height)))
 
         if right > left and bottom > top:
-            boxes.append([left, top, right, bottom])
+            detections.append(
+                {
+                    "box": [left, top, right, bottom],
+                    "detector_confidence": float(confidence)
+                    if confidence is not None
+                    else None,
+                }
+            )
 
-    return boxes
+    return detections
+
+
+def _detect_boxes(img: Image.Image) -> list[list[float]]:
+    return [detection["box"] for detection in _detect_detections(img)]
 
 
 def _crop_images(img: Image.Image, boxes: list[list[float]]) -> list[Image.Image]:
     return [img.crop(tuple(box)) for box in boxes]
+
+
+def _crop_preview_base64(crop: Image.Image) -> str:
+    preview = crop.copy()
+    preview.thumbnail((256, 256))
+    buffer = BytesIO()
+    preview.save(buffer, format="JPEG", quality=85)
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _crop_metadata(box: list[float], full_width: int, full_height: int) -> dict:
+    left, top, right, bottom = box
+    crop_width = max(0.0, right - left)
+    crop_height = max(0.0, bottom - top)
+    crop_area = crop_width * crop_height
+    full_area = max(1.0, float(full_width * full_height))
+    crop_area_ratio = crop_area / full_area
+    is_valid_crop = (
+        crop_width >= MIN_CROP_DIMENSION_PX
+        and crop_height >= MIN_CROP_DIMENSION_PX
+        and crop_area_ratio >= MIN_CROP_AREA_RATIO
+    )
+
+    return {
+        "crop_width": float(crop_width),
+        "crop_height": float(crop_height),
+        "crop_area_ratio": float(crop_area_ratio),
+        "is_valid_crop": is_valid_crop,
+    }
 
 
 def _embed_images(images: list[Image.Image]) -> list[list[float]]:
@@ -128,17 +178,43 @@ def process_registration_image(image_path: str) -> list[float]:
 def process_multiple_images(image_path: str) -> list[dict]:
     img = Image.open(image_path).convert("RGB")
     width, height = img.size
-    boxes = _detect_boxes(img)
+    detections = _detect_detections(img)
 
-    if not boxes:
-        boxes = [[0.0, 0.0, float(width), float(height)]]
+    if not detections:
+        detections = [
+            {
+                "box": [0.0, 0.0, float(width), float(height)],
+                "detector_confidence": None,
+            }
+        ]
 
-    embeddings = _embed_images(_crop_images(img, boxes))
+    boxes = [detection["box"] for detection in detections]
+    crops = _crop_images(img, boxes)
+    response_items = []
+    valid_crop_indices = []
 
-    if len(embeddings) != len(boxes):
-        raise ValueError(f"Expected {len(boxes)} embeddings, got {len(embeddings)}")
+    for index, (detection, crop) in enumerate(zip(detections, crops)):
+        crop_info = _crop_metadata(detection["box"], width, height)
+        response_item = {
+            "box": detection["box"],
+            "detector_confidence": detection["detector_confidence"],
+            "crop_preview_base64": _crop_preview_base64(crop),
+            "embedding": None,
+            **crop_info,
+        }
+        response_items.append(response_item)
 
-    return [
-        {"box": box, "embedding": embedding}
-        for box, embedding in zip(boxes, embeddings)
-    ]
+        if crop_info["is_valid_crop"]:
+            valid_crop_indices.append(index)
+
+    embeddings = _embed_images([crops[index] for index in valid_crop_indices])
+
+    if len(embeddings) != len(valid_crop_indices):
+        raise ValueError(
+            f"Expected {len(valid_crop_indices)} embeddings, got {len(embeddings)}"
+        )
+
+    for item_index, embedding in zip(valid_crop_indices, embeddings):
+        response_items[item_index]["embedding"] = embedding
+
+    return response_items

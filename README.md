@@ -16,6 +16,8 @@ Self-hosted visual inventory proof of concept for registering products from imag
 
 The API stores many normalized 512-dimensional CLIP embeddings per product. Recognition detects product regions with YOLO, crops each region, embeds each crop, searches across all product reference embeddings with pgvector cosine distance, then maps the best embedding matches back to unique `product_id` results. Recognition is only a suggestion: the frontend shows bounding boxes for review, and inventory is changed only after explicit human confirmation.
 
+Recognition responses include a small base64 JPEG crop preview for every detected box. These previews are debugging aids to verify whether YOLO cropped the actual product or a misleading fragment before trusting the CLIP match.
+
 ## Run With Docker Compose
 
 ```bash
@@ -90,6 +92,8 @@ Example response:
   {
     "detection_id": "det_1",
     "box": [10.0, 20.0, 140.0, 180.0],
+    "crop_preview_base64": "/9j/4AAQSkZJRgABAQ...",
+    "detector_confidence": 0.87,
     "product_id": "CUP-001",
     "name": "Test Cup",
     "inventory_count": 25,
@@ -97,6 +101,9 @@ Example response:
     "status": "recognized",
     "matched_embedding_id": 12,
     "matched_view_label": "front",
+    "top1_distance": 0.08,
+    "top2_distance": 0.19,
+    "distance_margin": 0.11,
     "candidates": [
       {
         "product_id": "CUP-001",
@@ -111,6 +118,8 @@ Example response:
   {
     "detection_id": "det_2",
     "box": [180.0, 40.0, 260.0, 150.0],
+    "crop_preview_base64": "/9j/4AAQSkZJRgABAQ...",
+    "detector_confidence": 0.42,
     "product_id": null,
     "name": null,
     "inventory_count": null,
@@ -118,6 +127,9 @@ Example response:
     "status": "unknown",
     "matched_embedding_id": 17,
     "matched_view_label": "side",
+    "top1_distance": 0.41,
+    "top2_distance": 0.43,
+    "distance_margin": 0.02,
     "candidates": [
       {
         "product_id": "ALT-001",
@@ -185,16 +197,19 @@ API service variables in `docker-compose.yml`:
 
 - `DATABASE_URL`: SQLAlchemy connection string for PostgreSQL.
 - `SIMILARITY_THRESHOLD`: maximum cosine distance for a recognized result. Larger distances become `unknown`.
+- `SIMILARITY_MARGIN_THRESHOLD`: minimum gap between top-1 and top-2 cosine distance before a result is considered safely recognized, default `0.03`. Smaller gaps become `uncertain`.
 - `YOLO_MODEL_PATH`: YOLO model path, default `yolov8n.pt`.
 - `YOLO_CLASSES`: comma-separated YOLO class IDs to detect. Use an empty value for the generic PoC so YOLO is not restricted to a few COCO classes.
 - `CLIP_MODEL_NAME`: Hugging Face CLIP model name, default `openai/clip-vit-base-patch32`.
 - `RECOGNITION_CANDIDATE_LIMIT`: number of unique product candidates to include per detected box, default `3`.
 - `REGISTRATION_FALLBACK_TO_FULL_IMAGE`: when `true`, product registration embeds the full image if YOLO detects zero boxes.
+- `MIN_CROP_DIMENSION_PX`: minimum crop width and height accepted for recognition, default `32`.
+- `MIN_CROP_AREA_RATIO`: minimum crop area relative to full image before recognition is attempted, default `0.001`.
 - `LOG_LEVEL`: Python logging level for the API, default `INFO`.
 
 For this generic PoC, keep `YOLO_CLASSES=""`. In production, train or provide a one-class YOLO model for `product` detection, then calibrate `YOLO_CLASSES` and detection thresholds around real warehouse images.
 
-`SIMILARITY_THRESHOLD` must be calibrated with real product photos. The default is only a starting point; too high can create false matches, and too low can mark valid products as `unknown`.
+`SIMILARITY_THRESHOLD` and `SIMILARITY_MARGIN_THRESHOLD` must be calibrated with real product photos. If wrong boxes are recognized as a known SKU, lower `SIMILARITY_THRESHOLD` or raise `SIMILARITY_MARGIN_THRESHOLD`. If valid products are often missed, raise `SIMILARITY_THRESHOLD` gradually while watching false positives.
 
 ## Database Initialization
 
@@ -219,6 +234,18 @@ Older databases that still have a legacy `products.embedding` column are migrate
 One product can have multiple reference images. For normal SKUs, start with 5-10 images per product from different angles and lighting conditions. For small industrial components, use 8-12 images per SKU because shape, surface finish, oil, shadows, and partial occlusion can change the CLIP embedding more than expected. The frontend batch uploader is intended to make collecting those 5-12 reference images practical during registration.
 
 Recognition searches every stored reference embedding first, then aggregates matches back to unique products by keeping each product's smallest cosine distance. Multiple embeddings improve robustness across views, lighting, packaging states, and close-up model-code photos.
+
+Recognition statuses:
+
+- `recognized`: best candidate is below `SIMILARITY_THRESHOLD` and separated from top-2 by at least `SIMILARITY_MARGIN_THRESHOLD`.
+- `uncertain`: best candidate is close enough, but top-2 is too close. The frontend shows this as `Cần kiểm tra` and defaults toward manual review.
+- `unknown`: no candidate, distance is too high, or the crop is too small/invalid.
+
+## Debugging False Positives
+
+Use the crop previews in the frontend recognition cards first. If a wrong product such as `nút xanh 1` appears repeatedly, check whether the crop preview is actually the target product or a small misleading part of the scene. The response also exposes `detector_confidence`, `top1_distance`, `top2_distance`, and `distance_margin` so you can see whether CLIP strongly preferred one SKU or produced an ambiguous match.
+
+For detector problems, tune YOLO classes/model later. For matching problems, tune `SIMILARITY_THRESHOLD`, `SIMILARITY_MARGIN_THRESHOLD`, and collect more reference images from the real product views.
 
 ## Human Confirmation Workflow
 

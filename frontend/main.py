@@ -1,3 +1,4 @@
+import base64
 from io import BytesIO
 
 import requests
@@ -48,7 +49,13 @@ def draw_annotated_image(image_bytes, detections):
     for index, item in enumerate(detections, start=1):
         box = item["box"]
         left, top, right, bottom = [float(value) for value in box]
-        color = "#16a34a" if item["status"] == "recognized" else "#f97316"
+        status = item["status"]
+        if status == "recognized":
+            color = "#16a34a"
+        elif status == "uncertain":
+            color = "#eab308"
+        else:
+            color = "#f97316"
         label = str(index)
 
         draw.rectangle((left, top, right, bottom), outline=color, width=4)
@@ -63,6 +70,28 @@ def format_distance(distance):
     return f"{distance:.4f}" if distance is not None else "-"
 
 
+def format_confidence(confidence):
+    return f"{confidence:.3f}" if confidence is not None else "-"
+
+
+def status_label(status):
+    labels = {
+        "recognized": "recognized",
+        "uncertain": "Cần kiểm tra",
+        "unknown": "unknown",
+    }
+    return labels.get(status, status)
+
+
+def crop_preview_image(crop_preview_base64):
+    if not crop_preview_base64:
+        return None
+    try:
+        return Image.open(BytesIO(base64.b64decode(crop_preview_base64)))
+    except Exception:
+        return None
+
+
 def detection_table_rows(results):
     rows = []
     for index, item in enumerate(results, start=1):
@@ -71,19 +100,31 @@ def detection_table_rows(results):
                 "STT": index,
                 "Detection ID": item["detection_id"],
                 "Box": ", ".join(f"{value:.1f}" for value in item["box"]),
-                "Trạng thái": item["status"],
+                "Trạng thái": status_label(item["status"]),
                 "Mã SP": item["product_id"] or "-",
                 "Tên": item["name"] or "-",
                 "Tồn kho": item["inventory_count"]
                 if item["inventory_count"] is not None
                 else "-",
-                "Độ sai lệch": format_distance(item["distance"]),
+                "Detector": format_confidence(item.get("detector_confidence")),
+                "Top1": format_distance(item.get("top1_distance")),
+                "Top2": format_distance(item.get("top2_distance")),
+                "Margin": format_distance(item.get("distance_margin")),
                 "Embedding": item.get("matched_embedding_id") or "-",
                 "View": item.get("matched_view_label") or "-",
             }
         )
 
     return rows
+
+
+def duplicate_product_ids(results):
+    counts = {}
+    for item in results:
+        product_id = item.get("product_id")
+        if product_id:
+            counts[product_id] = counts.get(product_id, 0) + 1
+    return [product_id for product_id, count in counts.items() if count > 1]
 
 
 def submit_inventory_confirmation(results):
@@ -188,9 +229,13 @@ if choice == "🔎 Nhận diện sản phẩm":
                             recognized_count = sum(
                                 1 for item in results if item["status"] == "recognized"
                             )
+                            uncertain_count = sum(
+                                1 for item in results if item["status"] == "uncertain"
+                            )
                             st.success(
                                 f"Đã xử lý {len(results)} vùng sản phẩm, "
-                                f"nhận diện được {recognized_count} sản phẩm."
+                                f"nhận diện được {recognized_count} sản phẩm, "
+                                f"cần kiểm tra {uncertain_count} vùng."
                             )
                     elif response.status_code == 404:
                         st.warning("Không tìm thấy sản phẩm phù hợp")
@@ -202,6 +247,12 @@ if choice == "🔎 Nhận diện sản phẩm":
 
     if results and image_bytes:
         st.subheader("Kết quả gợi ý từ AI")
+        duplicate_ids = duplicate_product_ids(results)
+        if duplicate_ids:
+            st.warning(
+                "Cùng một sản phẩm được nhận diện ở nhiều box. "
+                "Hãy kiểm tra kỹ để tránh nhập tồn kho sai."
+            )
         st.image(
             draw_annotated_image(image_bytes, results),
             caption="Ảnh đã đánh dấu vùng phát hiện",
@@ -212,17 +263,38 @@ if choice == "🔎 Nhận diện sản phẩm":
         st.subheader("Xác nhận của người dùng")
         for index, item in enumerate(results, start=1):
             detection_id = item["detection_id"]
-            title = f"{index}. {detection_id} - {item.get('name') or 'Chưa xác định'}"
+            title = (
+                f"{index}. {detection_id} - {status_label(item['status'])} - "
+                f"{item.get('name') or 'Chưa xác định'}"
+            )
             with st.expander(title, expanded=True):
-                st.write(
-                    {
-                        "product_id": item.get("product_id"),
-                        "status": item["status"],
-                        "distance": format_distance(item.get("distance")),
-                        "matched_embedding_id": item.get("matched_embedding_id"),
-                        "matched_view_label": item.get("matched_view_label"),
-                    }
-                )
+                preview = crop_preview_image(item.get("crop_preview_base64"))
+                crop_col, meta_col = st.columns([1, 2])
+                with crop_col:
+                    if preview is not None:
+                        st.image(preview, caption="Crop dùng để nhận diện", width=180)
+                    else:
+                        st.caption("Không có crop preview")
+                with meta_col:
+                    st.write(
+                        {
+                            "product_id": item.get("product_id"),
+                            "status": status_label(item["status"]),
+                            "detector_confidence": format_confidence(
+                                item.get("detector_confidence")
+                            ),
+                            "top1_distance": format_distance(item.get("top1_distance")),
+                            "top2_distance": format_distance(item.get("top2_distance")),
+                            "distance_margin": format_distance(
+                                item.get("distance_margin")
+                            ),
+                            "matched_embedding_id": item.get("matched_embedding_id"),
+                            "matched_view_label": item.get("matched_view_label"),
+                        }
+                    )
+
+                    if item["status"] == "uncertain":
+                        st.warning("Cần kiểm tra: top candidate chưa đủ tách biệt.")
 
                 candidates = item.get("candidates") or []
                 if candidates:
@@ -256,6 +328,8 @@ if choice == "🔎 Nhận diện sản phẩm":
                 }
                 if not item.get("product_id"):
                     decision_options = ["unknown", "manual", "reject"]
+                elif item["status"] == "uncertain":
+                    decision_options = ["manual", "confirm", "unknown", "reject"]
 
                 st.radio(
                     "Quyết định",

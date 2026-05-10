@@ -22,6 +22,7 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
 SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.25"))
+SIMILARITY_MARGIN_THRESHOLD = float(os.getenv("SIMILARITY_MARGIN_THRESHOLD", "0.03"))
 RECOGNITION_CANDIDATE_LIMIT = int(os.getenv("RECOGNITION_CANDIDATE_LIMIT", "3"))
 
 
@@ -63,6 +64,8 @@ class ProductEmbeddingResponse(BaseModel):
 class MultiRecognizeResponse(BaseModel):
     detection_id: str
     box: list[float]
+    crop_preview_base64: str | None
+    detector_confidence: float | None
     product_id: str | None
     name: str | None
     inventory_count: int | None
@@ -70,6 +73,9 @@ class MultiRecognizeResponse(BaseModel):
     status: str
     matched_embedding_id: int | None
     matched_view_label: str | None
+    top1_distance: float | None
+    top2_distance: float | None
+    distance_margin: float | None
     candidates: list[CandidateResponse] = Field(default_factory=list)
 
 
@@ -282,6 +288,40 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
 
         for index, item in enumerate(detected_items, start=1):
             detection_id = f"det_{index}"
+            base_response = {
+                "detection_id": detection_id,
+                "box": item["box"],
+                "crop_preview_base64": item.get("crop_preview_base64"),
+                "detector_confidence": item.get("detector_confidence"),
+                "product_id": None,
+                "name": None,
+                "inventory_count": None,
+                "distance": None,
+                "matched_embedding_id": None,
+                "matched_view_label": None,
+                "top1_distance": None,
+                "top2_distance": None,
+                "distance_margin": None,
+                "candidates": [],
+            }
+
+            if not item.get("is_valid_crop", True) or item.get("embedding") is None:
+                logger.info(
+                    "recognize item=%s crop_width=%s crop_height=%s area_ratio=%.6f status=%s",
+                    index,
+                    item.get("crop_width"),
+                    item.get("crop_height"),
+                    item.get("crop_area_ratio", 0.0),
+                    "unknown",
+                )
+                response_items.append(
+                    MultiRecognizeResponse(
+                        **base_response,
+                        status="unknown",
+                    )
+                )
+                continue
+
             results = _nearest_product_candidates(
                 db,
                 item["embedding"],
@@ -297,16 +337,8 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
                 )
                 response_items.append(
                     MultiRecognizeResponse(
-                        detection_id=detection_id,
-                        box=item["box"],
-                        product_id=None,
-                        name=None,
-                        inventory_count=None,
-                        distance=None,
+                        **base_response,
                         status="unknown",
-                        matched_embedding_id=None,
-                        matched_view_label=None,
-                        candidates=[],
                     )
                 )
                 continue
@@ -320,6 +352,23 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
                 )
                 for candidate_product, candidate_embedding, candidate_distance in results
             ]
+            top1_distance = distance
+            top2_distance = results[1][2] if len(results) > 1 else None
+            distance_margin = (
+                top2_distance - top1_distance
+                if top2_distance is not None
+                else None
+            )
+            match_fields = {
+                **base_response,
+                "distance": top1_distance,
+                "matched_embedding_id": product_embedding.id,
+                "matched_view_label": product_embedding.view_label,
+                "top1_distance": top1_distance,
+                "top2_distance": top2_distance,
+                "distance_margin": distance_margin,
+                "candidates": candidates,
+            }
 
             if distance > SIMILARITY_THRESHOLD:
                 logger.info(
@@ -330,16 +379,30 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
                 )
                 response_items.append(
                     MultiRecognizeResponse(
-                        detection_id=detection_id,
-                        box=item["box"],
-                        product_id=None,
-                        name=None,
-                        inventory_count=None,
-                        distance=distance,
+                        **match_fields,
                         status="unknown",
-                        matched_embedding_id=product_embedding.id,
-                        matched_view_label=product_embedding.view_label,
-                        candidates=candidates,
+                    )
+                )
+                continue
+
+            if (
+                distance_margin is not None
+                and distance_margin < SIMILARITY_MARGIN_THRESHOLD
+            ):
+                logger.info(
+                    "recognize item=%s best_distance=%.6f margin=%.6f status=%s",
+                    index,
+                    distance,
+                    distance_margin,
+                    "uncertain",
+                )
+                response_items.append(
+                    MultiRecognizeResponse(
+                        **match_fields,
+                        product_id=product.product_id,
+                        name=product.name,
+                        inventory_count=product.inventory_count or 0,
+                        status="uncertain",
                     )
                 )
                 continue
@@ -352,16 +415,11 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
             )
             response_items.append(
                 MultiRecognizeResponse(
-                    detection_id=detection_id,
-                    box=item["box"],
+                    **match_fields,
                     product_id=product.product_id,
                     name=product.name,
                     inventory_count=product.inventory_count or 0,
-                    distance=distance,
                     status="recognized",
-                    matched_embedding_id=product_embedding.id,
-                    matched_view_label=product_embedding.view_label,
-                    candidates=candidates,
                 )
             )
 

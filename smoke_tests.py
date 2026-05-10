@@ -1,4 +1,4 @@
-from app.api import app
+from app.api import MultiRecognizeResponse, app
 from app.models import InventoryTransaction, ProductEmbedding
 
 
@@ -30,9 +30,26 @@ def test_inventory_transaction_model_exists() -> None:
     assert InventoryTransaction.__tablename__ == "inventory_transactions"
 
 
+def test_recognize_response_debug_fields_exist() -> None:
+    if hasattr(MultiRecognizeResponse, "model_fields"):
+        fields = MultiRecognizeResponse.model_fields
+    else:
+        fields = MultiRecognizeResponse.__fields__
+    required_fields = {
+        "crop_preview_base64",
+        "detector_confidence",
+        "top1_distance",
+        "top2_distance",
+        "distance_margin",
+    }
+    missing_fields = required_fields - set(fields)
+    assert not missing_fields, f"Missing response fields: {sorted(missing_fields)}"
+
+
 if __name__ == "__main__":
     test_required_routes_exist()
     test_product_embedding_model_exists()
     test_product_embedding_dimension()
     test_inventory_transaction_model_exists()
+    test_recognize_response_debug_fields_exist()
     print("Smoke checks passed")
