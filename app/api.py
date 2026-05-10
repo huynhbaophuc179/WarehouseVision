@@ -245,6 +245,7 @@ async def upsert_product(
 async def add_product_embedding(
     product_id: str,
     view_label: str | None = Form(None),
+    use_full_image: bool = Form(False),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
@@ -258,7 +259,11 @@ async def add_product_embedding(
             raise HTTPException(status_code=404, detail="Product not found")
 
         try:
-            embedding = process_registration_image(temp_path)
+            embedding = (
+                process_image(temp_path)
+                if use_full_image
+                else process_registration_image(temp_path)
+            )
         except RegistrationImageError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

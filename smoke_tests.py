@@ -1,4 +1,9 @@
 from app.api import MultiRecognizeResponse, app
+from app.ai_pipeline import (
+    YOLO_CONFIDENCE_THRESHOLD,
+    YOLO_IOU_THRESHOLD,
+    YOLO_MAX_DETECTIONS,
+)
 from app.models import InventoryTransaction, ProductEmbedding
 
 
@@ -46,10 +51,28 @@ def test_recognize_response_debug_fields_exist() -> None:
     assert not missing_fields, f"Missing response fields: {sorted(missing_fields)}"
 
 
+def test_embedding_route_accepts_full_image_option() -> None:
+    route = next(
+        route
+        for route in app.routes
+        if route.path == "/api/v1/products/{product_id}/embeddings"
+    )
+    body_param_names = {param.name for param in route.dependant.body_params}
+    assert "use_full_image" in body_param_names
+
+
+def test_yolo_prediction_defaults_exist() -> None:
+    assert 0.0 <= YOLO_CONFIDENCE_THRESHOLD <= 1.0
+    assert 0.0 <= YOLO_IOU_THRESHOLD <= 1.0
+    assert YOLO_MAX_DETECTIONS >= 1
+
+
 if __name__ == "__main__":
     test_required_routes_exist()
     test_product_embedding_model_exists()
     test_product_embedding_dimension()
     test_inventory_transaction_model_exists()
     test_recognize_response_debug_fields_exist()
+    test_embedding_route_accepts_full_image_option()
+    test_yolo_prediction_defaults_exist()
     print("Smoke checks passed")

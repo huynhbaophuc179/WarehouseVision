@@ -59,7 +59,7 @@ Health check:
 curl http://localhost:8000/health
 ```
 
-Register a product reference image. This upserts product metadata and inserts a new reference embedding without overwriting existing embeddings for the same product. If YOLO detects exactly one object, the API stores an embedding for that crop. If YOLO detects zero objects and `REGISTRATION_FALLBACK_TO_FULL_IMAGE=true`, the API stores a full-image embedding. Images with multiple detected objects are rejected:
+Register a product reference image. This upserts product metadata and inserts a new reference embedding without overwriting existing embeddings for the same product. By default, registration embeds the full uploaded image so manually cropped reference photos are safe to use. If `REGISTRATION_USE_DETECTOR_CROP=true`, registration uses the stricter YOLO crop path and rejects images with multiple detected objects:
 
 ```bash
 curl -F product_id=CUP-001 \
@@ -74,6 +74,15 @@ Add another reference image to an existing product:
 
 ```bash
 curl -F view_label=back \
+  -F file=@cup-back.jpg \
+  http://localhost:8000/api/v1/products/CUP-001/embeddings
+```
+
+If the reference image is already cropped tightly around the product, bypass detector cropping for that upload:
+
+```bash
+curl -F view_label=back \
+  -F use_full_image=true \
   -F file=@cup-back.jpg \
   http://localhost:8000/api/v1/products/CUP-001/embeddings
 ```
@@ -201,16 +210,26 @@ API service variables in `docker-compose.yml`:
 - `SIMILARITY_RECOGNIZED_THRESHOLD`: maximum top-1 cosine distance for a direct `recognized` result, default `0.15`.
 - `SIMILARITY_UNKNOWN_THRESHOLD`: maximum top-1 cosine distance before a crop becomes `unknown`, default `0.22`.
 - `SIMILARITY_MARGIN_THRESHOLD`: minimum gap between top-1 and top-2 cosine distance before a result is considered safely recognized, default `0.03`. Smaller gaps become `uncertain`.
+- `YOLO_CONFIDENCE_THRESHOLD`: YOLO prediction confidence threshold, default `0.25`.
+- `YOLO_IOU_THRESHOLD`: YOLO NMS IoU threshold, default `0.45`.
+- `YOLO_MAX_DETECTIONS`: maximum YOLO detections per image, default `20`.
 - `YOLO_MODEL_PATH`: YOLO model path, default `yolov8n.pt`.
 - `YOLO_CLASSES`: comma-separated YOLO class IDs to detect. Use an empty value for the generic PoC so YOLO is not restricted to a few COCO classes.
 - `CLIP_MODEL_NAME`: Hugging Face CLIP model name, default `openai/clip-vit-base-patch32`.
 - `RECOGNITION_CANDIDATE_LIMIT`: number of unique product candidates to include per detected box, default `3`.
+- `REGISTRATION_USE_DETECTOR_CROP`: when `false`, registration embeds the full uploaded reference image. Set to `true` only when the detector crop is trusted.
 - `REGISTRATION_FALLBACK_TO_FULL_IMAGE`: when `true`, product registration embeds the full image if YOLO detects zero boxes.
 - `MIN_CROP_DIMENSION_PX`: minimum crop width and height accepted for recognition, default `32`.
 - `MIN_CROP_AREA_RATIO`: minimum crop area relative to full image before recognition is attempted, default `0.001`.
 - `LOG_LEVEL`: Python logging level for the API, default `INFO`.
 
 For this generic PoC, keep `YOLO_CLASSES=""`. In production, train or provide a one-class YOLO model for `product` detection, then calibrate `YOLO_CLASSES` and detection thresholds around real warehouse images.
+
+## Custom Product Detector
+
+The default `yolov8n.pt` model is only a placeholder trained on COCO classes. For multi-object warehouse scenes, train a custom one-class YOLO detector with class name `product`. This detector should only crop valid product regions; SKU identity remains CLIP embedding search against pgvector, not YOLO class prediction.
+
+After training, copy the weights to `./models/best.pt`, set `YOLO_MODEL_PATH=/models/best.pt`, and restart with Docker Compose. The API service mounts `./models` to `/models`. See `docs/detector_training.md` for dataset layout, annotation rules, and training commands.
 
 Recognition thresholds must be calibrated with real product photos. A direct `recognized` result now requires both detector confidence and visual similarity confidence. If wrong boxes are recognized as a known SKU, raise `DETECTOR_RECOGNIZED_CONFIDENCE_THRESHOLD`, lower `SIMILARITY_RECOGNIZED_THRESHOLD`, lower `SIMILARITY_UNKNOWN_THRESHOLD`, or raise `SIMILARITY_MARGIN_THRESHOLD`. If valid products are often missed, loosen these gradually while watching false positives.
 
@@ -234,7 +253,7 @@ Older databases that still have a legacy `products.embedding` column are migrate
 
 ## Reference Image Guidance
 
-One product can have multiple reference images. For normal SKUs, start with 5-10 images per product from different angles and lighting conditions. For small industrial components, use 8-12 images per SKU because shape, surface finish, oil, shadows, and partial occlusion can change the CLIP embedding more than expected. The frontend batch uploader is intended to make collecting those 5-12 reference images practical during registration.
+One product can have multiple reference images. For normal SKUs, start with 5-10 images per product from different angles and lighting conditions. For small industrial components, use 8-12 images per SKU because shape, surface finish, oil, shadows, and partial occlusion can change the CLIP embedding more than expected. The frontend batch uploader is intended to make collecting those 5-12 reference images practical during registration. When reference photos are already cropped tightly around one product, enable the full-image option so YOLO does not recrop them.
 
 Recognition searches every stored reference embedding first, then aggregates matches back to unique products by keeping each product's smallest cosine distance. Multiple embeddings improve robustness across views, lighting, packaging states, and close-up model-code photos.
 
@@ -269,7 +288,7 @@ These checks do not run YOLO or CLIP inference.
 ## Known Limitations
 
 - The default `yolov8n.pt` model is trained on COCO classes, not industrial inventory parts.
-- Product registration rejects multiple detected boxes, but can use full-image fallback when YOLO detects zero boxes.
+- Product registration embeds full images by default. If `REGISTRATION_USE_DETECTOR_CROP=true`, multiple detected boxes are rejected and zero boxes can fall back to full image.
 - Recognition uses threshold-based unknown handling and does not update inventory quantities without user confirmation.
 - Real accuracy depends on training a one-class product detector later and calibrating the similarity threshold with real images.
 - Current recognition is visual-only: no OCR, no fine-tuning, and no custom YOLO model is included yet.

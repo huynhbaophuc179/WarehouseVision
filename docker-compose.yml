@@ -24,17 +24,22 @@ services:
       SIMILARITY_RECOGNIZED_THRESHOLD: "0.15"
       SIMILARITY_UNKNOWN_THRESHOLD: "0.22"
       SIMILARITY_MARGIN_THRESHOLD: "0.03"
+      YOLO_CONFIDENCE_THRESHOLD: "0.25"
+      YOLO_IOU_THRESHOLD: "0.45"
+      YOLO_MAX_DETECTIONS: "20"
       YOLO_MODEL_PATH: yolov8n.pt
       YOLO_CLASSES: ""
       CLIP_MODEL_NAME: openai/clip-vit-base-patch32
       RECOGNITION_CANDIDATE_LIMIT: "3"
       MIN_CROP_DIMENSION_PX: "32"
       MIN_CROP_AREA_RATIO: "0.001"
+      REGISTRATION_USE_DETECTOR_CROP: "false"
       REGISTRATION_FALLBACK_TO_FULL_IMAGE: "true"
     ports:
       - "8000:8000"
     volumes:
       - model_cache:/root/.cache
+      - ./models:/models
     depends_on:
       db:
         condition: service_healthy

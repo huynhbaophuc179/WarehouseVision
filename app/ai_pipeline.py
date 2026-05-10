@@ -11,6 +11,9 @@ from ultralytics import YOLO
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "yolov8n.pt")
 CLIP_MODEL_NAME = os.getenv("CLIP_MODEL_NAME", "openai/clip-vit-base-patch32")
+YOLO_CONFIDENCE_THRESHOLD = float(os.getenv("YOLO_CONFIDENCE_THRESHOLD", "0.25"))
+YOLO_IOU_THRESHOLD = float(os.getenv("YOLO_IOU_THRESHOLD", "0.45"))
+YOLO_MAX_DETECTIONS = int(os.getenv("YOLO_MAX_DETECTIONS", "20"))
 MIN_CROP_DIMENSION_PX = int(os.getenv("MIN_CROP_DIMENSION_PX", "32"))
 MIN_CROP_AREA_RATIO = float(os.getenv("MIN_CROP_AREA_RATIO", "0.001"))
 
@@ -50,7 +53,14 @@ class RegistrationImageError(ValueError):
 
 def _detect_detections(img: Image.Image) -> list[dict]:
     yolo_model = _load_yolo_model()
-    results = yolo_model.predict(img, classes=_parse_yolo_classes(), verbose=False)
+    results = yolo_model.predict(
+        img,
+        classes=_parse_yolo_classes(),
+        conf=YOLO_CONFIDENCE_THRESHOLD,
+        iou=YOLO_IOU_THRESHOLD,
+        max_det=YOLO_MAX_DETECTIONS,
+        verbose=False,
+    )
 
     if not results or len(results[0].boxes) == 0:
         return []
@@ -153,19 +163,23 @@ def process_image(image_path: str) -> list[float]:
 
 def process_registration_image(image_path: str) -> list[float]:
     img = Image.open(image_path).convert("RGB")
-    boxes = _detect_boxes(img)
 
-    if len(boxes) > 1:
-        raise RegistrationImageError(
-            "Vui lòng chụp ảnh chỉ chứa 1 sản phẩm duy nhất để làm mẫu"
-        )
-
-    if len(boxes) == 1:
-        images = _crop_images(img, boxes)
-    elif _env_flag("REGISTRATION_FALLBACK_TO_FULL_IMAGE", True):
+    if not _env_flag("REGISTRATION_USE_DETECTOR_CROP", False):
         images = [img]
     else:
-        raise RegistrationImageError("Không phát hiện sản phẩm trong ảnh mẫu")
+        boxes = _detect_boxes(img)
+
+        if len(boxes) > 1:
+            raise RegistrationImageError(
+                "Vui lòng chụp ảnh chỉ chứa 1 sản phẩm duy nhất để làm mẫu"
+            )
+
+        if len(boxes) == 1:
+            images = _crop_images(img, boxes)
+        elif _env_flag("REGISTRATION_FALLBACK_TO_FULL_IMAGE", True):
+            images = [img]
+        else:
+            raise RegistrationImageError("Không phát hiện sản phẩm trong ảnh mẫu")
 
     embeddings = _embed_images(images)
 

@@ -28,10 +28,11 @@ def build_file_payload(uploaded_file):
     }
 
 
-def upload_reference_image(product_id, uploaded_file, view_label):
+def upload_reference_image(product_id, uploaded_file, view_label, use_full_image=False):
     data = {}
     if view_label:
         data["view_label"] = view_label
+    data["use_full_image"] = "true" if use_full_image else "false"
 
     return requests.post(
         f"{API_URL}/products/{product_id}/embeddings",
@@ -452,6 +453,11 @@ elif choice == "📦 Đăng ký sản phẩm mới":
             accept_multiple_files=True,
             key="product_registration_image",
         )
+        p_additional_use_full_image = st.checkbox(
+            "Ảnh bổ sung đã crop đúng sản phẩm, không cần YOLO crop lại",
+            value=True,
+            key="registration_additional_use_full_image",
+        )
         submit = st.form_submit_button("Lưu sản phẩm")
 
         if submit:
@@ -525,6 +531,7 @@ elif choice == "📦 Đăng ký sản phẩm mới":
                                     p_id,
                                     reference_file,
                                     view_label,
+                                    use_full_image=p_additional_use_full_image,
                                 )
                             except requests.RequestException as exc:
                                 rows.append(
@@ -600,6 +607,11 @@ elif choice == "📦 Đăng ký sản phẩm mới":
             accept_multiple_files=True,
             key="additional_reference_images",
         )
+        use_full_image = st.checkbox(
+            "Ảnh đã crop đúng sản phẩm, không cần YOLO crop lại",
+            value=True,
+            key="embedding_use_full_image",
+        )
         add_reference = st.form_submit_button("Thêm ảnh tham chiếu")
 
         if add_reference:
@@ -617,6 +629,7 @@ elif choice == "📦 Đăng ký sản phẩm mới":
                                 existing_product_id,
                                 reference_file,
                                 view_label,
+                                use_full_image=use_full_image,
                             )
                         except requests.RequestException as exc:
                             rows.append(
