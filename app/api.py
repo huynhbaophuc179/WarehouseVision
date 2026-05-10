@@ -398,11 +398,13 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
                 )
                 response_items.append(
                     MultiRecognizeResponse(
-                        **match_fields,
-                        product_id=product.product_id,
-                        name=product.name,
-                        inventory_count=product.inventory_count or 0,
-                        status="uncertain",
+                        **{
+                            **match_fields,
+                            "product_id": product.product_id,
+                            "name": product.name,
+                            "inventory_count": product.inventory_count or 0,
+                            "status": "uncertain",
+                        }
                     )
                 )
                 continue
@@ -415,11 +417,13 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
             )
             response_items.append(
                 MultiRecognizeResponse(
-                    **match_fields,
-                    product_id=product.product_id,
-                    name=product.name,
-                    inventory_count=product.inventory_count or 0,
-                    status="recognized",
+                    **{
+                        **match_fields,
+                        "product_id": product.product_id,
+                        "name": product.name,
+                        "inventory_count": product.inventory_count or 0,
+                        "status": "recognized",
+                    }
                 )
             )
 
