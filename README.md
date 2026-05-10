@@ -34,7 +34,7 @@ Services:
 - Streamlit frontend: http://localhost:8501
 - PostgreSQL: localhost:5432
 
-The Streamlit frontend supports single-image product creation and batch upload of additional reference images for the same SKU. Batch uploads auto-generate view labels such as `view_1`, `view_2`, or `front_1`, `front_2` when a common prefix is provided.
+The Streamlit frontend supports multi-image product registration in one submit. The first selected image creates the product, and remaining selected images are uploaded as additional reference embeddings for the same SKU. Batch uploads auto-generate view labels such as `view_1`, `view_2`, or `front_1`, `front_2` when a common prefix is provided.
 
 Stop services:
 

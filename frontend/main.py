@@ -109,125 +109,151 @@ elif choice == "📦 Đăng ký sản phẩm mới":
         p_name = st.text_input("Tên sản phẩm")
         p_stock = st.number_input("Số lượng tồn kho ban đầu", min_value=0, value=10)
         p_view_label = st.text_input(
-            "Nhãn góc chụp (tuỳ chọn)",
+            "Nhãn ảnh đầu tiên (tuỳ chọn)",
             placeholder="front, back, left, right, top, label, closeup_model_code",
         )
-        p_file = st.file_uploader(
-            "Ảnh gốc sản phẩm",
+        p_label_prefix = st.text_input(
+            "Tiền tố nhãn cho bộ ảnh",
+            value="view",
+            placeholder="view, front, back, angle",
+        )
+        p_files = st.file_uploader(
+            "Ảnh sản phẩm",
             type=["jpg", "jpeg", "png"],
+            accept_multiple_files=True,
             key="product_registration_image",
         )
         submit = st.form_submit_button("Lưu sản phẩm")
 
         if submit:
-            if not p_id or not p_name or not p_file:
-                st.warning("Vui lòng nhập đầy đủ thông tin và chọn ảnh sản phẩm.")
+            if not p_id or not p_name or not p_files:
+                st.warning("Vui lòng nhập đầy đủ thông tin và chọn ít nhất một ảnh sản phẩm.")
             else:
+                primary_file = p_files[0]
+                primary_view_label = p_view_label.strip() or build_batch_label(
+                    p_label_prefix,
+                    1,
+                )
                 data = {
                     "product_id": p_id,
                     "name": p_name,
                     "inventory_count": int(p_stock),
+                    "view_label": primary_view_label,
                 }
-                if p_view_label.strip():
-                    data["view_label"] = p_view_label.strip()
 
                 with st.spinner("Đang đăng ký sản phẩm..."):
+                    progress = st.progress(0)
+                    rows = []
+                    total_files = len(p_files)
+
                     try:
                         response = requests.post(
                             f"{API_URL}/products",
-                            files=build_file_payload(p_file),
+                            files=build_file_payload(primary_file),
                             data=data,
                             timeout=120,
                         )
                     except requests.RequestException as exc:
-                        st.error(f"Không kết nối được API: {exc}")
-                    else:
-                        if response.status_code in (200, 201):
-                            st.session_state["last_registered_product_id"] = p_id
-                            st.success("Đã đăng ký sản phẩm thành công!")
-                        else:
-                            st.error(f"Lỗi khi đăng ký sản phẩm: {response.text}")
-
-    st.divider()
-    st.subheader("Thêm nhiều ảnh tham chiếu cho sản phẩm vừa đăng ký")
-
-    with st.form("new_product_batch_embedding_form"):
-        recent_product_id = st.session_state.get("last_registered_product_id", "")
-        batch_product_id = st.text_input(
-            "Mã sản phẩm",
-            value=recent_product_id,
-            key="new_product_batch_product_id",
-        )
-        batch_label_prefix = st.text_input(
-            "Tiền tố nhãn góc chụp",
-            value="view",
-            key="new_product_batch_label_prefix",
-            placeholder="view, front, back, angle",
-        )
-        batch_reference_files = st.file_uploader(
-            "Các ảnh tham chiếu bổ sung",
-            type=["jpg", "jpeg", "png"],
-            accept_multiple_files=True,
-            key="new_product_batch_reference_images",
-        )
-        add_batch_references = st.form_submit_button("Thêm nhiều ảnh tham chiếu")
-
-        if add_batch_references:
-            if not batch_product_id or not batch_reference_files:
-                st.warning("Vui lòng nhập mã sản phẩm và chọn ít nhất một ảnh.")
-            else:
-                progress = st.progress(0)
-                rows = []
-
-                for index, reference_file in enumerate(batch_reference_files, start=1):
-                    view_label = build_batch_label(batch_label_prefix, index)
-                    try:
-                        response = upload_reference_image(
-                            batch_product_id,
-                            reference_file,
-                            view_label,
-                        )
-                    except requests.RequestException as exc:
                         rows.append(
                             {
-                                "Ảnh": reference_file.name,
-                                "View label": view_label,
-                                "Trạng thái": "failed",
-                                "Chi tiết": str(exc),
+                                "filename": primary_file.name,
+                                "role": "primary",
+                                "view_label": primary_view_label,
+                                "status": "failed",
+                                "detail": str(exc),
                             }
                         )
                     else:
-                        if response.status_code == 201:
-                            payload = response.json()
+                        if response.status_code in (200, 201):
+                            st.session_state["last_registered_product_id"] = p_id
                             rows.append(
                                 {
-                                    "Ảnh": reference_file.name,
-                                    "View label": payload["view_label"] or view_label,
-                                    "Trạng thái": "success",
-                                    "Chi tiết": f"Embedding #{payload['id']}",
+                                    "filename": primary_file.name,
+                                    "role": "primary",
+                                    "view_label": primary_view_label,
+                                    "status": "success",
+                                    "detail": "Product created",
                                 }
                             )
                         else:
                             rows.append(
                                 {
-                                    "Ảnh": reference_file.name,
-                                    "View label": view_label,
-                                    "Trạng thái": "failed",
-                                    "Chi tiết": response.text,
+                                    "filename": primary_file.name,
+                                    "role": "primary",
+                                    "view_label": primary_view_label,
+                                    "status": "failed",
+                                    "detail": response.text,
                                 }
                             )
 
-                    progress.progress(index / len(batch_reference_files))
+                    progress.progress(1 / total_files)
 
-                success_count = sum(1 for row in rows if row["Trạng thái"] == "success")
-                if success_count == len(rows):
-                    st.success(f"Đã thêm {success_count} ảnh tham chiếu.")
-                elif success_count:
-                    st.warning(f"Đã thêm {success_count}/{len(rows)} ảnh tham chiếu.")
-                else:
-                    st.error("Không thêm được ảnh tham chiếu nào.")
+                    if rows[0]["status"] == "success":
+                        for index, reference_file in enumerate(p_files[1:], start=2):
+                            view_label = build_batch_label(p_label_prefix, index)
+                            try:
+                                response = upload_reference_image(
+                                    p_id,
+                                    reference_file,
+                                    view_label,
+                                )
+                            except requests.RequestException as exc:
+                                rows.append(
+                                    {
+                                        "filename": reference_file.name,
+                                        "role": "additional",
+                                        "view_label": view_label,
+                                        "status": "failed",
+                                        "detail": str(exc),
+                                    }
+                                )
+                            else:
+                                if response.status_code == 201:
+                                    payload = response.json()
+                                    rows.append(
+                                        {
+                                            "filename": reference_file.name,
+                                            "role": "additional",
+                                            "view_label": payload["view_label"]
+                                            or view_label,
+                                            "status": "success",
+                                            "detail": f"Embedding #{payload['id']}",
+                                        }
+                                    )
+                                else:
+                                    rows.append(
+                                        {
+                                            "filename": reference_file.name,
+                                            "role": "additional",
+                                            "view_label": view_label,
+                                            "status": "failed",
+                                            "detail": response.text,
+                                        }
+                                    )
 
-                st.dataframe(rows, use_container_width=True, hide_index=True)
+                            progress.progress(index / total_files)
+                    else:
+                        for index, reference_file in enumerate(p_files[1:], start=2):
+                            rows.append(
+                                {
+                                    "filename": reference_file.name,
+                                    "role": "additional",
+                                    "view_label": build_batch_label(p_label_prefix, index),
+                                    "status": "skipped",
+                                    "detail": "Primary image failed; product was not created",
+                                }
+                            )
+                            progress.progress(index / total_files)
+
+                    success_count = sum(1 for row in rows if row["status"] == "success")
+                    if success_count == total_files:
+                        st.success(f"Đã đăng ký sản phẩm với {success_count} ảnh.")
+                    elif rows[0]["status"] == "success":
+                        st.warning(f"Đã xử lý thành công {success_count}/{total_files} ảnh.")
+                    else:
+                        st.error("Không đăng ký được sản phẩm.")
+
+                    st.dataframe(rows, use_container_width=True, hide_index=True)
 
     st.divider()
     st.subheader("Thêm ảnh tham chiếu cho sản phẩm đã có")
