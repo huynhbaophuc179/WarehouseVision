@@ -9,14 +9,26 @@ Self-hosted visual inventory proof of concept for registering products from imag
 - PostgreSQL 15 with pgvector for product metadata and visual embeddings
 - SQLAlchemy models:
   - `Product(product_id, name, inventory_count, created_at, updated_at)`
-  - `ProductEmbedding(id, product_id, embedding, image_path, view_label, created_at)`
+  - `ProductEmbedding(id, product_id, embedding, image_path, view_label, source, quality_status, created_at)`
   - `InventoryTransaction(id, product_id, quantity_delta, action_type, source, detection_id, created_at)`
+  - `RecognitionSession(id, original_image_path, status, mode, model_version, created_at)`
+  - `DetectionReview(id, session_id, boxes, crop_path, predicted/confirmed product, decision, confidence fields, created_at)`
 - Streamlit frontend in `frontend/main.py`
 - Docker Compose starts `db`, `api`, and `frontend`
 
 The API stores many normalized 512-dimensional CLIP embeddings per product. Recognition detects product regions with YOLO, crops each region, embeds each crop, searches across all product reference embeddings with pgvector cosine distance, then maps the best embedding matches back to unique `product_id` results. Recognition is only a suggestion: the frontend shows bounding boxes for review, and inventory is changed only after explicit human confirmation.
 
 Recognition responses include a small base64 JPEG crop preview for every detected box. These previews are debugging aids to verify whether YOLO cropped the actual product or a misleading fragment before trusting the CLIP match.
+
+## UI Modes
+
+The Streamlit app separates daily work from AI improvement:
+
+- `Operation Mode`: for warehouse scanning. It shows the uploaded image with bounding boxes, a simple product list, and user decisions for inventory confirmation. Technical fields stay hidden under `Technical Details`.
+- `Training Mode`: for supervisors/admins reviewing AI behavior. It shows stored recognition sessions, crops, top-K candidates, detector confidence, distance metrics, matched embedding details, and training decisions.
+- `Product Setup`: keeps the existing product creation and multi-image reference upload flow.
+
+Every recognition request creates a review session and one detection review row per box. Operation Mode can save decisions such as accepted, corrected product, unknown, not product, or ignored. Training Mode can later review the same stored session.
 
 ## Run With Docker Compose
 
@@ -100,6 +112,8 @@ Example response:
 [
   {
     "detection_id": "det_1",
+    "session_id": 42,
+    "review_id": 1001,
     "box": [10.0, 20.0, 140.0, 180.0],
     "crop_preview_base64": "/9j/4AAQSkZJRgABAQ...",
     "detector_confidence": 0.87,
@@ -200,6 +214,24 @@ Candidate responses are unique by product and include the best matched reference
 }
 ```
 
+Review recent recognition sessions:
+
+```bash
+curl http://localhost:8000/api/v1/review/sessions
+```
+
+Update a detection review:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/review/detections/1001 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_decision": "corrected_product",
+    "confirmed_product_id": "CUP-001",
+    "add_as_reference": false
+  }'
+```
+
 ## Environment Variables
 
 API service variables in `docker-compose.yml`:
@@ -217,6 +249,7 @@ API service variables in `docker-compose.yml`:
 - `YOLO_CLASSES`: comma-separated YOLO class IDs to detect. Use an empty value for the generic PoC so YOLO is not restricted to a few COCO classes.
 - `CLIP_MODEL_NAME`: Hugging Face CLIP model name, default `openai/clip-vit-base-patch32`.
 - `RECOGNITION_CANDIDATE_LIMIT`: number of unique product candidates to include per detected box, default `3`.
+- `REVIEW_STORAGE_DIR`: directory for recognition session images and detection crops. Docker sets this to `/data/reviews`; local runs default to `review_data`.
 - `REGISTRATION_USE_DETECTOR_CROP`: when `false`, registration embeds the full uploaded reference image. Set to `true` only when the detector crop is trusted.
 - `REGISTRATION_FALLBACK_TO_FULL_IMAGE`: when `true`, product registration embeds the full image if YOLO detects zero boxes.
 - `MIN_CROP_DIMENSION_PX`: minimum crop width and height accepted for recognition, default `32`.
@@ -241,6 +274,8 @@ On FastAPI startup, `init_db()` creates:
 - `products` table
 - `product_embeddings` table
 - `inventory_transactions` table
+- `recognition_sessions` table
+- `detection_reviews` table
 - HNSW cosine index on `product_embeddings.embedding`
 
 Index name:
@@ -256,6 +291,8 @@ Older databases that still have a legacy `products.embedding` column are migrate
 One product can have multiple reference images. For normal SKUs, start with 5-10 images per product from different angles and lighting conditions. For small industrial components, use 8-12 images per SKU because shape, surface finish, oil, shadows, and partial occlusion can change the CLIP embedding more than expected. The frontend batch uploader is intended to make collecting those 5-12 reference images practical during registration. When reference photos are already cropped tightly around one product, enable the full-image option so YOLO does not recrop them.
 
 Recognition searches every stored reference embedding first, then aggregates matches back to unique products by keeping each product's smallest cosine distance. Multiple embeddings improve robustness across views, lighting, packaging states, and close-up model-code photos.
+
+Reference embeddings have a `quality_status`. Recognition uses `approved` and `auto_approved` embeddings only. User-confirmed crops can be saved as `pending` references from Training or Operation Mode without immediately affecting production recognition.
 
 Recognition statuses:
 
@@ -275,6 +312,16 @@ The Streamlit recognition screen draws bounding boxes over the uploaded image an
 
 AI recognition never updates stock by itself. The frontend sends reviewed results to `POST /api/v1/inventory/confirm` only when the user clicks `Confirm inventory result`. Rejected detections are returned in the confirmation response and can be collected later as useful examples for improving detector or embedding quality.
 
+## Progressive Learning Export
+
+Reviewed detections can be exported later for one-class YOLO training:
+
+```bash
+docker compose exec api python scripts/export_yolo_dataset.py --output-dir datasets/yolo_product
+```
+
+Positive product labels are exported for decisions `accepted`, `corrected_product`, `box_adjusted`, and `manually_added`. Decisions such as `not_product`, `unknown`, `rejected_detection`, and `ignored` are not exported as product labels.
+
 ## Smoke Checks
 
 Run lightweight import/route checks inside the API container:
@@ -290,6 +337,7 @@ These checks do not run YOLO or CLIP inference.
 - The default `yolov8n.pt` model is trained on COCO classes, not industrial inventory parts.
 - Product registration embeds full images by default. If `REGISTRATION_USE_DETECTOR_CROP=true`, multiple detected boxes are rejected and zero boxes can fall back to full image.
 - Recognition uses threshold-based unknown handling and does not update inventory quantities without user confirmation.
+- Box delete/add/adjust interactions in Training Mode are placeholders in this iteration; decisions and corrected-box fields are present for a later canvas-based UI.
 - Real accuracy depends on training a one-class product detector later and calibrating the similarity threshold with real images.
 - Current recognition is visual-only: no OCR, no fine-tuning, and no custom YOLO model is included yet.
 - Model weights are downloaded on first use unless already cached in the Docker volume.

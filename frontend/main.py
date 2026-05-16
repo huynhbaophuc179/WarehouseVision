@@ -14,7 +14,11 @@ DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD = float(
 st.set_page_config(page_title="AI Inventory System", layout="wide")
 st.title("🛡️ Hệ thống Nhận diện & Quản lý Tồn kho AI")
 
-menu = ["🔎 Nhận diện sản phẩm", "📦 Đăng ký sản phẩm mới"]
+menu = [
+    "🔎 Operation Mode",
+    "🧠 Training Mode",
+    "📦 Product Setup",
+]
 choice = st.sidebar.selectbox("Chức năng", menu)
 
 
@@ -97,6 +101,48 @@ def crop_preview_image(crop_preview_base64):
         return None
 
 
+def image_from_base64(image_base64):
+    if not image_base64:
+        return None
+    try:
+        return Image.open(BytesIO(base64.b64decode(image_base64)))
+    except Exception:
+        return None
+
+
+def operation_result_rows(results):
+    rows = []
+    grouped = {}
+    for item in results:
+        key = item.get("product_id") or f"unknown_{item['detection_id']}"
+        grouped.setdefault(
+            key,
+            {
+                "product_id": item.get("product_id") or "-",
+                "name": item.get("name") or "Chưa xác định",
+                "inventory_count": item.get("inventory_count")
+                if item.get("inventory_count") is not None
+                else "-",
+                "status": status_label(item["status"]),
+                "detections": 0,
+            },
+        )
+        grouped[key]["detections"] += 1
+
+    for index, item in enumerate(grouped.values(), start=1):
+        rows.append(
+            {
+                "STT": index,
+                "Mã SP": item["product_id"],
+                "Tên": item["name"],
+                "Tồn kho": item["inventory_count"],
+                "Trạng thái": item["status"],
+                "Số box": item["detections"],
+            }
+        )
+    return rows
+
+
 def detection_table_rows(results):
     rows = []
     for index, item in enumerate(results, start=1):
@@ -139,10 +185,84 @@ def clear_confirmation_state():
         "quantity_",
         "action_",
         "reject_reason_",
+        "add_reference_",
     )
     for key in list(st.session_state.keys()):
         if key.startswith(prefixes):
             st.session_state.pop(key, None)
+
+
+def review_payload_for_item(item):
+    detection_id = item["detection_id"]
+    decision = st.session_state.get(f"decision_{detection_id}", "confirm")
+    add_as_reference = bool(st.session_state.get(f"add_reference_{detection_id}", False))
+
+    if decision == "confirm":
+        confirmed_product_id = item.get("product_id")
+        user_decision = "accepted" if confirmed_product_id else "unknown"
+    elif decision == "manual":
+        confirmed_product_id = st.session_state.get(
+            f"manual_product_{detection_id}",
+            "",
+        ).strip()
+        user_decision = "corrected_product" if confirmed_product_id else "unknown"
+    elif decision == "unknown":
+        confirmed_product_id = None
+        user_decision = "unknown"
+    elif decision == "reject":
+        confirmed_product_id = None
+        user_decision = "not_product"
+    else:
+        confirmed_product_id = None
+        user_decision = "ignored"
+
+    return {
+        "user_decision": user_decision,
+        "confirmed_product_id": confirmed_product_id or None,
+        "add_as_reference": add_as_reference and bool(confirmed_product_id),
+        "reference_quality_status": "pending",
+    }
+
+
+def save_detection_feedback(results):
+    rows = []
+    for item in results:
+        review_id = item.get("review_id")
+        if not review_id:
+            rows.append(
+                {
+                    "detection_id": item["detection_id"],
+                    "status": "skipped",
+                    "detail": "No review_id returned by API",
+                }
+            )
+            continue
+
+        try:
+            response = requests.post(
+                f"{API_URL}/review/detections/{review_id}",
+                json=review_payload_for_item(item),
+                timeout=120,
+            )
+        except requests.RequestException as exc:
+            rows.append(
+                {
+                    "detection_id": item["detection_id"],
+                    "status": "failed",
+                    "detail": str(exc),
+                }
+            )
+        else:
+            rows.append(
+                {
+                    "detection_id": item["detection_id"],
+                    "status": "success" if response.status_code == 200 else "failed",
+                    "detail": "Feedback saved"
+                    if response.status_code == 200
+                    else response.text,
+                }
+            )
+    return rows
 
 
 def submit_inventory_confirmation(results):
@@ -187,6 +307,10 @@ def submit_inventory_confirmation(results):
                 )
         elif decision == "unknown":
             rejected_items.append({"detection_id": detection_id, "reason": "marked_unknown"})
+        elif decision == "report":
+            rejected_items.append(
+                {"detection_id": detection_id, "reason": "sent_to_training_review"}
+            )
         else:
             reason = st.session_state.get(f"reject_reason_{detection_id}", "").strip()
             rejected_items.append(
@@ -203,8 +327,8 @@ def submit_inventory_confirmation(results):
     )
 
 
-if choice == "🔎 Nhận diện sản phẩm":
-    st.header("🔎 Nhận diện & Check tồn kho")
+if choice == "🔎 Operation Mode":
+    st.header("🔎 Operation Mode")
     camera_file = st.camera_input("Live Camera")
     uploaded_file = st.file_uploader(
         "Hoặc chọn ảnh sản phẩm...",
@@ -221,6 +345,7 @@ if choice == "🔎 Nhận diện sản phẩm":
             st.session_state.pop("recognition_results", None)
             st.session_state.pop("recognition_image_bytes", None)
             st.session_state.pop("inventory_confirmation_response", None)
+            st.session_state.pop("feedback_save_response", None)
             clear_confirmation_state()
 
         st.image(selected_file, caption="Ảnh đầu vào", width=300)
@@ -231,6 +356,7 @@ if choice == "🔎 Nhận diện sản phẩm":
                     response = requests.post(
                         f"{API_URL}/recognize",
                         files=build_file_payload(selected_file),
+                        data={"mode": "operation"},
                         timeout=120,
                     )
                 except requests.RequestException as exc:
@@ -242,6 +368,7 @@ if choice == "🔎 Nhận diện sản phẩm":
                         st.session_state["recognition_results"] = results
                         st.session_state["recognition_image_bytes"] = selected_bytes
                         st.session_state.pop("inventory_confirmation_response", None)
+                        st.session_state.pop("feedback_save_response", None)
 
                         if not results:
                             st.warning("Không phát hiện sản phẩm trong ảnh")
@@ -266,7 +393,7 @@ if choice == "🔎 Nhận diện sản phẩm":
     image_bytes = st.session_state.get("recognition_image_bytes")
 
     if results and image_bytes:
-        st.subheader("Kết quả gợi ý từ AI")
+        st.subheader("Kết quả scan")
         duplicate_ids = duplicate_product_ids(results)
         if duplicate_ids:
             st.warning(
@@ -278,9 +405,9 @@ if choice == "🔎 Nhận diện sản phẩm":
             caption="Ảnh đã đánh dấu vùng phát hiện",
             use_container_width=True,
         )
-        st.dataframe(detection_table_rows(results), use_container_width=True, hide_index=True)
+        st.dataframe(operation_result_rows(results), use_container_width=True, hide_index=True)
 
-        st.subheader("Xác nhận của người dùng")
+        st.subheader("Xác nhận nhanh")
         for index, item in enumerate(results, start=1):
             detection_id = item["detection_id"]
             title = (
@@ -288,18 +415,35 @@ if choice == "🔎 Nhận diện sản phẩm":
                 f"{item.get('name') or 'Chưa xác định'}"
             )
             with st.expander(title, expanded=True):
-                preview = crop_preview_image(item.get("crop_preview_base64"))
-                crop_col, meta_col = st.columns([1, 2])
-                with crop_col:
+                st.write(
+                    {
+                        "Mã SP": item.get("product_id") or "-",
+                        "Tên": item.get("name") or "Chưa xác định",
+                        "Tồn kho": item.get("inventory_count")
+                        if item.get("inventory_count") is not None
+                        else "-",
+                        "Trạng thái": status_label(item["status"]),
+                    }
+                )
+
+                if item["status"] == "uncertain":
+                    st.warning("Cần kiểm tra trước khi xác nhận.")
+                detector_confidence = item.get("detector_confidence")
+                if (
+                    detector_confidence is not None
+                    and detector_confidence < DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD
+                ):
+                    st.warning("Crop này có thể không phải sản phẩm hợp lệ.")
+
+                with st.expander("Technical Details", expanded=False):
+                    preview = crop_preview_image(item.get("crop_preview_base64"))
                     if preview is not None:
                         st.image(preview, caption="Crop dùng để nhận diện", width=180)
-                    else:
-                        st.caption("Không có crop preview")
-                with meta_col:
                     st.write(
                         {
-                            "product_id": item.get("product_id"),
-                            "status": status_label(item["status"]),
+                            "session_id": item.get("session_id"),
+                            "review_id": item.get("review_id"),
+                            "box": item.get("box"),
                             "detector_confidence": format_confidence(
                                 item.get("detector_confidence")
                             ),
@@ -312,53 +456,42 @@ if choice == "🔎 Nhận diện sản phẩm":
                             "matched_view_label": item.get("matched_view_label"),
                         }
                     )
-
-                    if item["status"] == "uncertain":
-                        st.warning("Cần kiểm tra: top candidate chưa đủ tách biệt.")
-                    detector_confidence = item.get("detector_confidence")
-                    if (
-                        detector_confidence is not None
-                        and detector_confidence < DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD
-                    ):
-                        st.warning(
-                            "Detector confidence thấp, crop này có thể không phải "
-                            "sản phẩm hợp lệ."
+                    candidates = item.get("candidates") or []
+                    if candidates:
+                        st.dataframe(
+                            [
+                                {
+                                    "product_id": candidate["product_id"],
+                                    "name": candidate["name"],
+                                    "inventory_count": candidate["inventory_count"],
+                                    "distance": format_distance(candidate["distance"]),
+                                    "embedding": candidate["matched_embedding_id"],
+                                    "view": candidate["matched_view_label"] or "-",
+                                }
+                                for candidate in candidates
+                            ],
+                            use_container_width=True,
+                            hide_index=True,
                         )
-
-                candidates = item.get("candidates") or []
-                if candidates:
-                    st.dataframe(
-                        [
-                            {
-                                "product_id": candidate["product_id"],
-                                "name": candidate["name"],
-                                "inventory_count": candidate["inventory_count"],
-                                "distance": format_distance(candidate["distance"]),
-                                "embedding": candidate["matched_embedding_id"],
-                                "view": candidate["matched_view_label"] or "-",
-                            }
-                            for candidate in candidates
-                        ],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
 
                 decision_options = [
                     "confirm",
                     "manual",
                     "unknown",
                     "reject",
+                    "report",
                 ]
                 decision_labels = {
                     "confirm": "Xác nhận đúng",
                     "manual": "Chọn product_id khác",
                     "unknown": "Đánh dấu unknown",
-                    "reject": "Loại bỏ detection",
+                    "reject": "Không phải sản phẩm",
+                    "report": "Gửi sang Training Review",
                 }
                 if not item.get("product_id"):
-                    decision_options = ["unknown", "manual", "reject"]
+                    decision_options = ["unknown", "manual", "reject", "report"]
                 elif item["status"] == "uncertain":
-                    decision_options = ["manual", "confirm", "unknown", "reject"]
+                    decision_options = ["manual", "confirm", "unknown", "reject", "report"]
 
                 st.radio(
                     "Quyết định",
@@ -380,6 +513,11 @@ if choice == "🔎 Nhận diện sản phẩm":
                     )
 
                 if decision in {"confirm", "manual"}:
+                    st.checkbox(
+                        "Add this crop as product reference image",
+                        value=False,
+                        key=f"add_reference_{detection_id}",
+                    )
                     col1, col2 = st.columns(2)
                     with col1:
                         st.number_input(
@@ -403,6 +541,11 @@ if choice == "🔎 Nhận diện sản phẩm":
                     )
 
         if st.button("Confirm inventory result"):
+            feedback_rows = save_detection_feedback(results)
+            st.session_state["feedback_save_response"] = feedback_rows
+            failed_feedback = [row for row in feedback_rows if row["status"] == "failed"]
+            if failed_feedback:
+                st.warning("Một số feedback chưa lưu được. Kiểm tra Training Mode để rà lại.")
             try:
                 confirm_response = submit_inventory_confirmation(results)
             except requests.RequestException as exc:
@@ -418,6 +561,13 @@ if choice == "🔎 Nhận diện sản phẩm":
         if st.session_state.get("inventory_confirmation_response"):
             st.subheader("Kết quả xác nhận")
             confirmation = st.session_state["inventory_confirmation_response"]
+            if st.session_state.get("feedback_save_response"):
+                st.caption("Feedback review")
+                st.dataframe(
+                    st.session_state["feedback_save_response"],
+                    use_container_width=True,
+                    hide_index=True,
+                )
             if confirmation.get("confirmed_items"):
                 st.dataframe(
                     confirmation["confirmed_items"],
@@ -431,8 +581,245 @@ if choice == "🔎 Nhận diện sản phẩm":
                     hide_index=True,
                 )
 
-elif choice == "📦 Đăng ký sản phẩm mới":
-    st.header("📦 Đăng ký vào Database")
+elif choice == "🧠 Training Mode":
+    st.header("🧠 Cải thiện AI")
+
+    try:
+        sessions_response = requests.get(
+            f"{API_URL}/review/sessions",
+            params={"limit": 50},
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        st.error(f"Không tải được danh sách review sessions: {exc}")
+        sessions_response = None
+
+    if sessions_response is not None:
+        if sessions_response.status_code != 200:
+            st.error(f"Lỗi khi tải review sessions: {sessions_response.text}")
+        else:
+            sessions = sessions_response.json()
+            if not sessions:
+                st.info("Chưa có recognition session nào để review.")
+            else:
+                session_options = {
+                    (
+                        f"Session #{session['id']} - {session['mode']} - "
+                        f"{session['created_at']}"
+                    ): session["id"]
+                    for session in sessions
+                }
+                selected_label = st.selectbox(
+                    "Chọn recognition session",
+                    list(session_options.keys()),
+                )
+                selected_session_id = session_options[selected_label]
+
+                try:
+                    session_response = requests.get(
+                        f"{API_URL}/review/sessions/{selected_session_id}",
+                        timeout=30,
+                    )
+                except requests.RequestException as exc:
+                    st.error(f"Không tải được session: {exc}")
+                    session_response = None
+
+                if session_response is not None:
+                    if session_response.status_code != 200:
+                        st.error(f"Lỗi khi tải session: {session_response.text}")
+                    else:
+                        session = session_response.json()
+                        st.write(
+                            {
+                                "session_id": session["id"],
+                                "mode": session["mode"],
+                                "status": session["status"],
+                                "model_version": session.get("model_version") or "-",
+                            }
+                        )
+
+                        original_image = image_from_base64(
+                            session.get("original_image_base64")
+                        )
+                        original_bytes = (
+                            base64.b64decode(session["original_image_base64"])
+                            if session.get("original_image_base64")
+                            else None
+                        )
+                        detections = session.get("detections") or []
+
+                        if original_image is not None:
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.image(
+                                    original_image,
+                                    caption="Original image",
+                                    use_container_width=True,
+                                )
+                            with col2:
+                                if original_bytes:
+                                    annotated_items = [
+                                        {
+                                            "box": detection.get("corrected_box")
+                                            or detection["original_box"],
+                                            "status": "recognized"
+                                            if detection.get("predicted_product_id")
+                                            else "unknown",
+                                        }
+                                        for detection in detections
+                                    ]
+                                    st.image(
+                                        draw_annotated_image(
+                                            original_bytes,
+                                            annotated_items,
+                                        ),
+                                        caption="Bounding boxes",
+                                        use_container_width=True,
+                                    )
+
+                        st.subheader("Detection reviews")
+                        for detection in detections:
+                            title = (
+                                f"Detection #{detection['detection_index']} - "
+                                f"{detection.get('predicted_product_id') or 'unknown'} - "
+                                f"{detection['user_decision']}"
+                            )
+                            with st.expander(title, expanded=False):
+                                crop = image_from_base64(
+                                    detection.get("crop_preview_base64")
+                                )
+                                crop_col, detail_col = st.columns([1, 2])
+                                with crop_col:
+                                    if crop is not None:
+                                        st.image(crop, caption="Recognition crop", width=220)
+                                    else:
+                                        st.caption("No crop image available")
+                                with detail_col:
+                                    st.write(
+                                        {
+                                            "predicted_product_id": detection.get(
+                                                "predicted_product_id"
+                                            ),
+                                            "confirmed_product_id": detection.get(
+                                                "confirmed_product_id"
+                                            ),
+                                            "detector_confidence": format_confidence(
+                                                detection.get("detector_confidence")
+                                            ),
+                                            "top1_distance": format_distance(
+                                                detection.get("top1_distance")
+                                            ),
+                                            "top2_distance": format_distance(
+                                                detection.get("top2_distance")
+                                            ),
+                                            "distance_margin": format_distance(
+                                                detection.get("distance_margin")
+                                            ),
+                                            "matched_embedding_id": detection.get(
+                                                "matched_embedding_id"
+                                            ),
+                                            "matched_view_label": detection.get(
+                                                "matched_view_label"
+                                            ),
+                                        }
+                                    )
+
+                                candidates = detection.get("candidates") or []
+                                if candidates:
+                                    st.dataframe(
+                                        [
+                                            {
+                                                "product_id": candidate["product_id"],
+                                                "name": candidate["name"],
+                                                "inventory_count": candidate[
+                                                    "inventory_count"
+                                                ],
+                                                "distance": format_distance(
+                                                    candidate["distance"]
+                                                ),
+                                                "embedding": candidate[
+                                                    "matched_embedding_id"
+                                                ],
+                                                "view": candidate["matched_view_label"]
+                                                or "-",
+                                            }
+                                            for candidate in candidates
+                                        ],
+                                        use_container_width=True,
+                                        hide_index=True,
+                                    )
+
+                                with st.form(f"training_review_{detection['id']}"):
+                                    decisions = [
+                                        "accepted",
+                                        "corrected_product",
+                                        "wrong_sku",
+                                        "not_product",
+                                        "unknown",
+                                        "rejected_detection",
+                                        "box_adjusted",
+                                        "manually_added",
+                                        "ignored",
+                                    ]
+                                    current_decision = detection.get("user_decision")
+                                    selected_decision = st.selectbox(
+                                        "Training decision",
+                                        decisions,
+                                        index=decisions.index(current_decision)
+                                        if current_decision in decisions
+                                        else 0,
+                                    )
+                                    confirmed_product_id = st.text_input(
+                                        "Confirmed product_id",
+                                        value=detection.get("confirmed_product_id")
+                                        or detection.get("predicted_product_id")
+                                        or "",
+                                    )
+                                    add_as_reference = st.checkbox(
+                                        "Add this crop as product reference image",
+                                        value=False,
+                                    )
+                                    st.caption(
+                                        "TODO: interactive box delete/add/adjust canvas. "
+                                        "For now, use decisions not_product, box_adjusted, "
+                                        "or manually_added to mark the review intent."
+                                    )
+                                    submitted = st.form_submit_button("Save review")
+
+                                    if submitted:
+                                        confirmed_value = confirmed_product_id.strip()
+                                        if selected_decision in {
+                                            "wrong_sku",
+                                            "not_product",
+                                            "unknown",
+                                            "rejected_detection",
+                                            "ignored",
+                                        }:
+                                            confirmed_value = ""
+                                        payload = {
+                                            "user_decision": selected_decision,
+                                            "confirmed_product_id": confirmed_value or None,
+                                            "add_as_reference": add_as_reference,
+                                            "reference_quality_status": "pending",
+                                        }
+                                        try:
+                                            update_response = requests.post(
+                                                f"{API_URL}/review/detections/{detection['id']}",
+                                                json=payload,
+                                                timeout=120,
+                                            )
+                                        except requests.RequestException as exc:
+                                            st.error(f"Không lưu được review: {exc}")
+                                        else:
+                                            if update_response.status_code == 200:
+                                                st.success("Đã lưu review.")
+                                            else:
+                                                st.error(
+                                                    f"Lỗi khi lưu review: {update_response.text}"
+                                                )
+
+elif choice == "📦 Product Setup":
+    st.header("📦 Đăng ký sản phẩm")
 
     with st.form("reg_form"):
         p_id = st.text_input("Mã sản phẩm (Product ID)")

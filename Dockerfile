@@ -19,6 +19,7 @@ RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 
 COPY app ./app
+COPY scripts ./scripts
 COPY smoke_tests.py .
 
 EXPOSE 8000

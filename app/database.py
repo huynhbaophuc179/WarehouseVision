@@ -25,6 +25,14 @@ ALTER TABLE products
 ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 """
 
+PRODUCT_EMBEDDING_METADATA_MIGRATION_SQL = """
+ALTER TABLE product_embeddings
+ADD COLUMN IF NOT EXISTS source VARCHAR(50) NOT NULL DEFAULT 'manual_upload';
+
+ALTER TABLE product_embeddings
+ADD COLUMN IF NOT EXISTS quality_status VARCHAR(50) NOT NULL DEFAULT 'approved';
+"""
+
 LEGACY_EMBEDDING_MIGRATION_SQL = """
 DO $$
 BEGIN
@@ -63,5 +71,6 @@ def init_db() -> None:
 
     with engine.begin() as connection:
         connection.execute(text(PRODUCT_TIMESTAMP_MIGRATION_SQL))
+        connection.execute(text(PRODUCT_EMBEDDING_METADATA_MIGRATION_SQL))
         connection.execute(text(LEGACY_EMBEDDING_MIGRATION_SQL))
         connection.execute(text(HNSW_COSINE_INDEX_SQL))

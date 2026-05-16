@@ -1,13 +1,19 @@
+import base64
+import json
 import logging
 import os
 import shutil
 import tempfile
+import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from PIL import Image
 
 from .ai_pipeline import (
     RegistrationImageError,
@@ -16,7 +22,13 @@ from .ai_pipeline import (
     process_registration_image,
 )
 from .database import SessionLocal, init_db
-from .models import InventoryTransaction, Product, ProductEmbedding
+from .models import (
+    DetectionReview,
+    InventoryTransaction,
+    Product,
+    ProductEmbedding,
+    RecognitionSession,
+)
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
@@ -33,6 +45,21 @@ SIMILARITY_RECOGNIZED_THRESHOLD = float(
 SIMILARITY_UNKNOWN_THRESHOLD = float(os.getenv("SIMILARITY_UNKNOWN_THRESHOLD", "0.22"))
 SIMILARITY_MARGIN_THRESHOLD = float(os.getenv("SIMILARITY_MARGIN_THRESHOLD", "0.03"))
 RECOGNITION_CANDIDATE_LIMIT = int(os.getenv("RECOGNITION_CANDIDATE_LIMIT", "3"))
+MODEL_VERSION = os.getenv("MODEL_VERSION", os.getenv("YOLO_MODEL_PATH", "yolov8n.pt"))
+REVIEW_STORAGE_DIR = Path(os.getenv("REVIEW_STORAGE_DIR", "review_data"))
+APPROVED_EMBEDDING_STATUSES = {"approved", "auto_approved"}
+REFERENCE_QUALITY_STATUSES = {"pending", "approved", "auto_approved", "rejected"}
+REVIEW_DECISIONS = {
+    "accepted",
+    "wrong_sku",
+    "corrected_product",
+    "not_product",
+    "unknown",
+    "rejected_detection",
+    "box_adjusted",
+    "manually_added",
+    "ignored",
+}
 
 
 @asynccontextmanager
@@ -68,9 +95,13 @@ class ProductEmbeddingResponse(BaseModel):
     product_id: str
     view_label: str | None
     image_path: str | None
+    source: str
+    quality_status: str
 
 
 class MultiRecognizeResponse(BaseModel):
+    session_id: int | None
+    review_id: int | None
     detection_id: str
     box: list[float]
     crop_preview_base64: str | None
@@ -114,6 +145,49 @@ class InventoryConfirmResponse(BaseModel):
     rejected_items: list[dict]
 
 
+class DetectionReviewUpdateRequest(BaseModel):
+    user_decision: str
+    confirmed_product_id: str | None = None
+    corrected_box: list[float] | None = None
+    add_as_reference: bool = False
+    reference_quality_status: str = "pending"
+
+
+class DetectionReviewResponse(BaseModel):
+    id: int
+    session_id: int
+    detection_index: int
+    original_box: list[float]
+    corrected_box: list[float] | None
+    crop_path: str | None
+    crop_preview_base64: str | None
+    predicted_product_id: str | None
+    confirmed_product_id: str | None
+    user_decision: str
+    detector_confidence: float | None
+    top1_distance: float | None
+    top2_distance: float | None
+    distance_margin: float | None
+    matched_embedding_id: int | None
+    matched_view_label: str | None
+    candidates: list[CandidateResponse] = Field(default_factory=list)
+    created_at: datetime
+
+
+class RecognitionSessionSummary(BaseModel):
+    id: int
+    original_image_path: str
+    status: str
+    mode: str
+    model_version: str | None
+    created_at: datetime
+
+
+class RecognitionSessionDetail(RecognitionSessionSummary):
+    original_image_base64: str | None
+    detections: list[DetectionReviewResponse]
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -134,6 +208,121 @@ def _ensure_image(file: UploadFile) -> None:
         raise HTTPException(status_code=400, detail="Uploaded file must be an image")
 
 
+def _ensure_review_storage_dir() -> Path:
+    REVIEW_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    return REVIEW_STORAGE_DIR
+
+
+def _image_to_base64(path: str | None, max_size: tuple[int, int] | None = None) -> str | None:
+    if not path or not os.path.exists(path):
+        return None
+
+    image = Image.open(path).convert("RGB")
+    if max_size is not None:
+        image.thumbnail(max_size)
+
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG", quality=85)
+    buffer.seek(0)
+    return base64.b64encode(buffer.read()).decode("ascii")
+
+
+def _create_recognition_session(
+    db: Session,
+    image_path: str,
+    mode: str,
+    model_version: str | None,
+) -> RecognitionSession:
+    storage_dir = _ensure_review_storage_dir()
+    session_token = uuid.uuid4().hex
+    original_path = storage_dir / f"{session_token}_original.jpg"
+    Image.open(image_path).convert("RGB").save(original_path, format="JPEG", quality=92)
+
+    session = RecognitionSession(
+        original_image_path=str(original_path),
+        status="open",
+        mode=mode,
+        model_version=model_version or MODEL_VERSION,
+    )
+    db.add(session)
+    db.flush()
+    return session
+
+
+def _save_detection_crop(
+    session: RecognitionSession,
+    image_path: str,
+    box: list[float],
+    detection_index: int,
+) -> str | None:
+    if len(box) != 4:
+        return None
+
+    image = Image.open(image_path).convert("RGB")
+    width, height = image.size
+    left, top, right, bottom = box
+    crop_box = (
+        max(0, min(int(round(left)), width)),
+        max(0, min(int(round(top)), height)),
+        max(0, min(int(round(right)), width)),
+        max(0, min(int(round(bottom)), height)),
+    )
+
+    if crop_box[2] <= crop_box[0] or crop_box[3] <= crop_box[1]:
+        return None
+
+    crop_path = REVIEW_STORAGE_DIR / f"session_{session.id}_det_{detection_index}.jpg"
+    image.crop(crop_box).save(crop_path, format="JPEG", quality=92)
+    return str(crop_path)
+
+
+def _box_from_review(review: DetectionReview, prefix: str) -> list[float] | None:
+    values = [
+        getattr(review, f"{prefix}_box_x1"),
+        getattr(review, f"{prefix}_box_y1"),
+        getattr(review, f"{prefix}_box_x2"),
+        getattr(review, f"{prefix}_box_y2"),
+    ]
+    if any(value is None for value in values):
+        return None
+    return [float(value) for value in values]
+
+
+def _review_candidates(review: DetectionReview) -> list[CandidateResponse]:
+    if not review.candidates_json:
+        return []
+
+    try:
+        raw_candidates = json.loads(review.candidates_json)
+    except json.JSONDecodeError:
+        return []
+
+    return [CandidateResponse(**candidate) for candidate in raw_candidates]
+
+
+def _review_response(review: DetectionReview) -> DetectionReviewResponse:
+    return DetectionReviewResponse(
+        id=review.id,
+        session_id=review.session_id,
+        detection_index=review.detection_index,
+        original_box=_box_from_review(review, "original") or [],
+        corrected_box=_box_from_review(review, "corrected"),
+        crop_path=review.crop_path,
+        crop_preview_base64=_image_to_base64(review.crop_path, max_size=(256, 256)),
+        predicted_product_id=review.predicted_product_id,
+        confirmed_product_id=review.confirmed_product_id,
+        user_decision=review.user_decision,
+        detector_confidence=review.detector_confidence,
+        top1_distance=review.top1_distance,
+        top2_distance=review.top2_distance,
+        distance_margin=review.distance_margin,
+        matched_embedding_id=review.matched_embedding_id,
+        matched_view_label=review.matched_view_label,
+        candidates=_review_candidates(review),
+        created_at=review.created_at,
+    )
+
+
 def _nearest_product_candidates(
     db: Session,
     query_vector: list[float],
@@ -145,6 +334,7 @@ def _nearest_product_candidates(
         db.query(Product, ProductEmbedding, distance_expr.label("distance"))
         .join(Product, ProductEmbedding.product_id == Product.product_id)
         .filter(ProductEmbedding.embedding.isnot(None))
+        .filter(ProductEmbedding.quality_status.in_(tuple(APPROVED_EMBEDDING_STATUSES)))
         .order_by(distance_expr)
         .limit(raw_limit)
         .all()
@@ -218,6 +408,8 @@ async def upsert_product(
                 product_id=product.product_id,
                 embedding=embedding,
                 view_label=view_label,
+                source="manual_upload",
+                quality_status="approved",
             )
         )
 
@@ -271,6 +463,8 @@ async def add_product_embedding(
             product_id=product.product_id,
             embedding=embedding,
             view_label=view_label,
+            source="manual_upload",
+            quality_status="approved",
         )
         db.add(product_embedding)
         db.commit()
@@ -281,6 +475,8 @@ async def add_product_embedding(
             product_id=product_embedding.product_id,
             view_label=product_embedding.view_label,
             image_path=product_embedding.image_path,
+            source=product_embedding.source,
+            quality_status=product_embedding.quality_status,
         )
     except Exception:
         db.rollback()
@@ -291,18 +487,27 @@ async def add_product_embedding(
 
 
 @app.post("/api/v1/recognize", response_model=list[MultiRecognizeResponse])
-async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def recognize(
+    file: UploadFile = File(...),
+    mode: str = Form("operation"),
+    model_version: str | None = Form(None),
+    db: Session = Depends(get_db),
+):
     _ensure_image(file)
     temp_path = _save_upload_to_temp(file)
 
     try:
         detected_items = process_multiple_images(temp_path)
         response_items = []
+        session = _create_recognition_session(db, temp_path, mode, model_version)
         logger.info("recognize detected_boxes=%s", len(detected_items))
 
         for index, item in enumerate(detected_items, start=1):
             detection_id = f"det_{index}"
+            crop_path = _save_detection_crop(session, temp_path, item["box"], index)
             base_response = {
+                "session_id": session.id,
+                "review_id": None,
                 "detection_id": detection_id,
                 "box": item["box"],
                 "crop_preview_base64": item.get("crop_preview_base64"),
@@ -319,6 +524,36 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
                 "candidates": [],
             }
 
+            def append_review_response(payload: dict) -> None:
+                candidates = [
+                    candidate.model_dump()
+                    if hasattr(candidate, "model_dump")
+                    else candidate.dict()
+                    for candidate in payload.get("candidates", [])
+                ]
+                review = DetectionReview(
+                    session_id=session.id,
+                    detection_index=index,
+                    original_box_x1=float(item["box"][0]),
+                    original_box_y1=float(item["box"][1]),
+                    original_box_x2=float(item["box"][2]),
+                    original_box_y2=float(item["box"][3]),
+                    crop_path=crop_path,
+                    predicted_product_id=payload.get("product_id"),
+                    user_decision="ignored",
+                    detector_confidence=payload.get("detector_confidence"),
+                    top1_distance=payload.get("top1_distance"),
+                    top2_distance=payload.get("top2_distance"),
+                    distance_margin=payload.get("distance_margin"),
+                    matched_embedding_id=payload.get("matched_embedding_id"),
+                    matched_view_label=payload.get("matched_view_label"),
+                    candidates_json=json.dumps(candidates) if candidates else None,
+                )
+                db.add(review)
+                db.flush()
+                payload["review_id"] = review.id
+                response_items.append(MultiRecognizeResponse(**payload))
+
             if not item.get("is_valid_crop", True) or item.get("embedding") is None:
                 logger.info(
                     "recognize item=%s crop_width=%s crop_height=%s area_ratio=%.6f status=%s",
@@ -328,12 +563,7 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
                     item.get("crop_area_ratio", 0.0),
                     "unknown",
                 )
-                response_items.append(
-                    MultiRecognizeResponse(
-                        **base_response,
-                        status="unknown",
-                    )
-                )
+                append_review_response({**base_response, "status": "unknown"})
                 continue
 
             results = _nearest_product_candidates(
@@ -349,12 +579,7 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
                     None,
                     "unknown",
                 )
-                response_items.append(
-                    MultiRecognizeResponse(
-                        **base_response,
-                        status="unknown",
-                    )
-                )
+                append_review_response({**base_response, "status": "unknown"})
                 continue
 
             product, product_embedding, distance = results[0]
@@ -401,12 +626,7 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
                     detector_confidence,
                     "unknown",
                 )
-                response_items.append(
-                    MultiRecognizeResponse(
-                        **match_fields,
-                        status="unknown",
-                    )
-                )
+                append_review_response({**match_fields, "status": "unknown"})
                 continue
 
             if distance > SIMILARITY_UNKNOWN_THRESHOLD:
@@ -416,12 +636,7 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
                     distance,
                     "unknown",
                 )
-                response_items.append(
-                    MultiRecognizeResponse(
-                        **match_fields,
-                        status="unknown",
-                    )
-                )
+                append_review_response({**match_fields, "status": "unknown"})
                 continue
 
             if is_medium_detector_confidence:
@@ -431,16 +646,14 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
                     detector_confidence,
                     "uncertain",
                 )
-                response_items.append(
-                    MultiRecognizeResponse(
-                        **{
-                            **match_fields,
-                            "product_id": product.product_id,
-                            "name": product.name,
-                            "inventory_count": product.inventory_count or 0,
-                            "status": "uncertain",
-                        }
-                    )
+                append_review_response(
+                    {
+                        **match_fields,
+                        "product_id": product.product_id,
+                        "name": product.name,
+                        "inventory_count": product.inventory_count or 0,
+                        "status": "uncertain",
+                    }
                 )
                 continue
 
@@ -451,16 +664,14 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
                     distance,
                     "uncertain",
                 )
-                response_items.append(
-                    MultiRecognizeResponse(
-                        **{
-                            **match_fields,
-                            "product_id": product.product_id,
-                            "name": product.name,
-                            "inventory_count": product.inventory_count or 0,
-                            "status": "uncertain",
-                        }
-                    )
+                append_review_response(
+                    {
+                        **match_fields,
+                        "product_id": product.product_id,
+                        "name": product.name,
+                        "inventory_count": product.inventory_count or 0,
+                        "status": "uncertain",
+                    }
                 )
                 continue
 
@@ -472,16 +683,14 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
                     distance_margin,
                     "uncertain",
                 )
-                response_items.append(
-                    MultiRecognizeResponse(
-                        **{
-                            **match_fields,
-                            "product_id": product.product_id,
-                            "name": product.name,
-                            "inventory_count": product.inventory_count or 0,
-                            "status": "uncertain",
-                        }
-                    )
+                append_review_response(
+                    {
+                        **match_fields,
+                        "product_id": product.product_id,
+                        "name": product.name,
+                        "inventory_count": product.inventory_count or 0,
+                        "status": "uncertain",
+                    }
                 )
                 continue
 
@@ -491,19 +700,21 @@ async def recognize(file: UploadFile = File(...), db: Session = Depends(get_db))
                 distance,
                 "recognized",
             )
-            response_items.append(
-                MultiRecognizeResponse(
-                    **{
-                        **match_fields,
-                        "product_id": product.product_id,
-                        "name": product.name,
-                        "inventory_count": product.inventory_count or 0,
-                        "status": "recognized",
-                    }
-                )
+            append_review_response(
+                {
+                    **match_fields,
+                    "product_id": product.product_id,
+                    "name": product.name,
+                    "inventory_count": product.inventory_count or 0,
+                    "status": "recognized",
+                }
             )
 
+        db.commit()
         return response_items
+    except Exception:
+        db.rollback()
+        raise
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
@@ -534,6 +745,134 @@ async def recognize_candidates(
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
+
+@app.get("/api/v1/review/sessions", response_model=list[RecognitionSessionSummary])
+def list_review_sessions(
+    limit: int = Query(25, ge=1, le=100),
+    mode: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    query = db.query(RecognitionSession)
+    if mode:
+        query = query.filter(RecognitionSession.mode == mode)
+
+    sessions = query.order_by(RecognitionSession.created_at.desc()).limit(limit).all()
+    return [
+        RecognitionSessionSummary(
+            id=session.id,
+            original_image_path=session.original_image_path,
+            status=session.status,
+            mode=session.mode,
+            model_version=session.model_version,
+            created_at=session.created_at,
+        )
+        for session in sessions
+    ]
+
+
+@app.get("/api/v1/review/sessions/{session_id}", response_model=RecognitionSessionDetail)
+def get_review_session(session_id: int, db: Session = Depends(get_db)):
+    session = db.get(RecognitionSession, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Recognition session not found")
+
+    detections = (
+        db.query(DetectionReview)
+        .filter(DetectionReview.session_id == session.id)
+        .order_by(DetectionReview.detection_index)
+        .all()
+    )
+    return RecognitionSessionDetail(
+        id=session.id,
+        original_image_path=session.original_image_path,
+        status=session.status,
+        mode=session.mode,
+        model_version=session.model_version,
+        created_at=session.created_at,
+        original_image_base64=_image_to_base64(
+            session.original_image_path,
+            max_size=(1200, 1200),
+        ),
+        detections=[_review_response(review) for review in detections],
+    )
+
+
+@app.post(
+    "/api/v1/review/detections/{review_id}",
+    response_model=DetectionReviewResponse,
+)
+def update_detection_review(
+    review_id: int,
+    payload: DetectionReviewUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    if payload.user_decision not in REVIEW_DECISIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid user_decision: {payload.user_decision}",
+        )
+
+    if payload.reference_quality_status not in REFERENCE_QUALITY_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid reference_quality_status: {payload.reference_quality_status}",
+        )
+
+    review = db.get(DetectionReview, review_id)
+    if review is None:
+        raise HTTPException(status_code=404, detail="Detection review not found")
+
+    confirmed_product_id = payload.confirmed_product_id
+    if payload.user_decision == "accepted" and not confirmed_product_id:
+        confirmed_product_id = review.predicted_product_id
+
+    if confirmed_product_id and db.get(Product, confirmed_product_id) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Product not found: {confirmed_product_id}",
+        )
+
+    if payload.corrected_box is not None:
+        if len(payload.corrected_box) != 4:
+            raise HTTPException(status_code=400, detail="corrected_box must have 4 values")
+        (
+            review.corrected_box_x1,
+            review.corrected_box_y1,
+            review.corrected_box_x2,
+            review.corrected_box_y2,
+        ) = [float(value) for value in payload.corrected_box]
+
+    review.user_decision = payload.user_decision
+    review.confirmed_product_id = confirmed_product_id
+
+    if payload.add_as_reference:
+        if not confirmed_product_id:
+            raise HTTPException(
+                status_code=400,
+                detail="confirmed_product_id is required to add a reference image",
+            )
+        if not review.crop_path or not os.path.exists(review.crop_path):
+            raise HTTPException(status_code=400, detail="Review crop image is unavailable")
+
+        embedding = process_image(review.crop_path)
+        db.add(
+            ProductEmbedding(
+                product_id=confirmed_product_id,
+                embedding=embedding,
+                image_path=review.crop_path,
+                view_label=f"user_confirmed_{review.id}",
+                source="user_confirmed_crop",
+                quality_status=payload.reference_quality_status,
+            )
+        )
+
+    if review.session:
+        review.session.status = "reviewed"
+
+    db.commit()
+    db.refresh(review)
+    return _review_response(review)
 
 
 @app.post("/api/v1/inventory/confirm", response_model=InventoryConfirmResponse)
