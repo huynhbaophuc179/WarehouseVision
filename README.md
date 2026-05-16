@@ -26,7 +26,10 @@ The Streamlit app separates daily work from AI improvement:
 
 - `Operation Mode`: for warehouse scanning. It shows the uploaded image with bounding boxes, a simple product list, and user decisions for inventory confirmation. Technical fields stay hidden under `Technical Details`.
 - `Training Mode`: for supervisors/admins reviewing AI behavior. It shows stored recognition sessions, crops, top-K candidates, detector confidence, distance metrics, matched embedding details, and training decisions.
-- `Product Setup`: keeps the existing product creation and multi-image reference upload flow.
+- `Product management`: keeps the existing product creation and multi-image reference upload flow.
+- `Draw missing box`: lets a reviewer draw one missing product box directly on the source image, preview the crop, and save it as a one-class YOLO `product` annotation.
+- `Dataset / YOLO export`: shows local dataset counts and creates or refreshes `data.yaml`.
+- `Settings / thresholds`: summarizes the main runtime threshold knobs.
 
 Every recognition request creates a review session and one detection review row per box. Operation Mode can save decisions such as accepted, corrected product, unknown, not product, `needs_review`, or ignored. Training Mode can later review the same stored session.
 
@@ -279,6 +282,7 @@ API service variables in `docker-compose.yml`:
 - `CLIP_MODEL_NAME`: Hugging Face CLIP model name, default `openai/clip-vit-base-patch32`.
 - `RECOGNITION_CANDIDATE_LIMIT`: number of unique product candidates to include per detected box, default `3`.
 - `REVIEW_STORAGE_DIR`: directory for recognition session images and detection crops. Docker sets this to `/data/reviews`; local runs default to `review_data`.
+- `YOLO_DATASET_DIR`: directory for saved human annotations and YOLO labels. Docker sets this to `/code/data/yolo_dataset`, mounted from local `./data`.
 - `REGISTRATION_USE_DETECTOR_CROP`: when `false`, registration embeds the full uploaded reference image. Set to `true` only when the detector crop is trusted.
 - `REGISTRATION_FALLBACK_TO_FULL_IMAGE`: when `true`, product registration embeds the full image if YOLO detects zero boxes.
 - `MIN_CROP_DIMENSION_PX`: minimum crop width and height accepted for recognition, default `32`.
@@ -353,6 +357,20 @@ docker compose exec api python scripts/export_yolo_dataset.py --output-dir datas
 
 The exporter groups reviews by recognition session: each original image is copied once, and every positive box in that image is written into one YOLO label file. Positive product labels are exported for decisions `accepted`, `corrected_product`, `box_adjusted`, and `manually_added`. Decisions such as `needs_review`, `not_product`, `unknown`, `rejected_detection`, and `ignored` are not exported as product labels.
 
+The app also saves human-drawn missing boxes into a local YOLO dataset folder:
+
+```text
+data/yolo_dataset/
+  images/train/
+  images/val/
+  labels/train/
+  labels/val/
+  metadata/
+  pending_review/
+```
+
+Manual missing boxes are saved as class `0 = product` labels with normalized YOLO coordinates. Rejected detections and other non-positive corrections are saved as metadata only, so they can be reviewed as hard examples without polluting positive training labels. Docker Compose mounts `./data` into the API container, so these files persist on the host.
+
 ## Smoke Checks
 
 Run lightweight import/route checks inside the API container:
@@ -368,7 +386,7 @@ These checks do not run YOLO or CLIP inference.
 - The default `yolov8n.pt` model is trained on COCO classes, not industrial inventory parts.
 - Product registration embeds full images by default. If `REGISTRATION_USE_DETECTOR_CROP=true`, multiple detected boxes are rejected and zero boxes can fall back to full image.
 - Recognition uses threshold-based unknown handling and does not update inventory quantities without user confirmation.
-- Training Mode currently uses numeric box forms for manual/add/adjust workflows. A canvas-based delete/add/adjust UI is still a later improvement.
+- Missing product boxes can be drawn on the source image in Streamlit, but full interactive editing/deleting of existing boxes is still a later improvement.
 - Real accuracy depends on training a one-class product detector later and calibrating the similarity threshold with real images.
 - Current recognition is visual-only: no OCR, no fine-tuning, and no custom YOLO model is included yet.
 - Model weights are downloaded on first use unless already cached in the Docker volume.

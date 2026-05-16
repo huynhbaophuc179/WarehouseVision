@@ -32,6 +32,7 @@ services:
       CLIP_MODEL_NAME: openai/clip-vit-base-patch32
       RECOGNITION_CANDIDATE_LIMIT: "3"
       REVIEW_STORAGE_DIR: /data/reviews
+      YOLO_DATASET_DIR: /code/data/yolo_dataset
       MIN_CROP_DIMENSION_PX: "32"
       MIN_CROP_AREA_RATIO: "0.001"
       REGISTRATION_USE_DETECTOR_CROP: "false"
@@ -41,6 +42,7 @@ services:
     volumes:
       - model_cache:/root/.cache
       - ./models:/models
+      - ./data:/code/data
       - ./datasets:/code/datasets
       - review_data:/data/reviews
     depends_on:

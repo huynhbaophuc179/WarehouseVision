@@ -1,4 +1,9 @@
-from app.api import MultiRecognizeResponse, REVIEW_DECISIONS, app
+from app.api import (
+    MultiRecognizeResponse,
+    REVIEW_DECISIONS,
+    app,
+    convert_box_to_yolo,
+)
 from app.ai_pipeline import (
     YOLO_CONFIDENCE_THRESHOLD,
     YOLO_IOU_THRESHOLD,
@@ -32,6 +37,8 @@ def test_required_routes_exist() -> None:
         "/api/v1/review/sessions/{session_id}",
         "/api/v1/review/detections/{review_id}",
         "/api/v1/review/sessions/{session_id}/manual-detection",
+        "/api/v1/yolo-dataset/summary",
+        "/api/v1/yolo-dataset/export-yaml",
         "/api/v1/product-embeddings/pending-review",
         "/api/v1/product-embeddings/{embedding_id}/quality-status",
     }
@@ -132,6 +139,18 @@ def test_yolo_prediction_defaults_exist() -> None:
     assert YOLO_MAX_DETECTIONS >= 1
 
 
+def test_yolo_box_conversion() -> None:
+    x_center, y_center, width, height = convert_box_to_yolo(
+        [10.0, 20.0, 50.0, 80.0],
+        100,
+        100,
+    )
+    assert round(x_center, 3) == 0.3
+    assert round(y_center, 3) == 0.5
+    assert round(width, 3) == 0.4
+    assert round(height, 3) == 0.6
+
+
 if __name__ == "__main__":
     test_drawable_canvas_dependency_declared()
     test_required_routes_exist()
@@ -146,4 +165,5 @@ if __name__ == "__main__":
     test_recognize_response_debug_fields_exist()
     test_embedding_route_accepts_full_image_option()
     test_yolo_prediction_defaults_exist()
+    test_yolo_box_conversion()
     print("Smoke checks passed")

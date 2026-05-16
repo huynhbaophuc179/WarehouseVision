@@ -47,6 +47,7 @@ SIMILARITY_MARGIN_THRESHOLD = float(os.getenv("SIMILARITY_MARGIN_THRESHOLD", "0.
 RECOGNITION_CANDIDATE_LIMIT = int(os.getenv("RECOGNITION_CANDIDATE_LIMIT", "3"))
 MODEL_VERSION = os.getenv("MODEL_VERSION", os.getenv("YOLO_MODEL_PATH", "yolov8n.pt"))
 REVIEW_STORAGE_DIR = Path(os.getenv("REVIEW_STORAGE_DIR", "review_data"))
+YOLO_DATASET_DIR = Path(os.getenv("YOLO_DATASET_DIR", "data/yolo_dataset"))
 APPROVED_EMBEDDING_STATUSES = {"approved", "auto_approved"}
 REFERENCE_QUALITY_STATUSES = {"pending", "approved", "auto_approved", "rejected"}
 REVIEW_DECISIONS = {
@@ -61,6 +62,18 @@ REVIEW_DECISIONS = {
     "manually_added",
     "ignored",
 }
+YOLO_POSITIVE_DECISIONS = {
+    "accepted",
+    "corrected_product",
+    "box_adjusted",
+    "manually_added",
+}
+YOLO_DATA_YAML = """path: {dataset_root}
+train: images/train
+val: images/val
+names:
+  0: product
+"""
 
 
 @asynccontextmanager
@@ -152,12 +165,16 @@ class DetectionReviewUpdateRequest(BaseModel):
     corrected_box: list[float] | None = None
     add_as_reference: bool = False
     reference_quality_status: str = "pending"
+    use_for_yolo_training: bool = False
 
 
 class ManualDetectionRequest(BaseModel):
     corrected_box: list[float]
     confirmed_product_id: str | None = None
     user_decision: str = "manually_added"
+    displayed_box: list[float] | None = None
+    display_size: list[int] | None = None
+    source: str = "human_missing_box"
 
 
 class DetectionReviewResponse(BaseModel):
@@ -178,6 +195,7 @@ class DetectionReviewResponse(BaseModel):
     matched_embedding_id: int | None
     matched_view_label: str | None
     candidates: list[CandidateResponse] = Field(default_factory=list)
+    yolo_annotation: dict | None = None
     created_at: datetime
 
 
@@ -204,6 +222,20 @@ class ProductEmbeddingReviewResponse(ProductEmbeddingResponse):
     image_preview_base64: str | None
 
 
+class YoloDatasetSummaryResponse(BaseModel):
+    dataset_dir: str
+    image_count: int
+    label_file_count: int
+    box_count: int
+    pending_review_count: int
+    data_yaml_path: str | None
+
+
+class YoloDatasetExportResponse(BaseModel):
+    data_yaml_path: str
+    summary: YoloDatasetSummaryResponse
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -227,6 +259,226 @@ def _ensure_image(file: UploadFile) -> None:
 def _ensure_review_storage_dir() -> Path:
     REVIEW_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     return REVIEW_STORAGE_DIR
+
+
+def _ensure_yolo_dataset_dirs() -> Path:
+    for relative_path in (
+        "images/train",
+        "images/val",
+        "labels/train",
+        "labels/val",
+        "metadata",
+        "pending_review",
+    ):
+        (YOLO_DATASET_DIR / relative_path).mkdir(parents=True, exist_ok=True)
+    return YOLO_DATASET_DIR
+
+
+def _clamp_box_to_image(
+    box: list[float],
+    width: int,
+    height: int,
+) -> list[int]:
+    x1, y1, x2, y2 = [float(value) for value in box]
+    left = int(round(max(0.0, min(min(x1, x2), float(width)))))
+    top = int(round(max(0.0, min(min(y1, y2), float(height)))))
+    right = int(round(max(0.0, min(max(x1, x2), float(width)))))
+    bottom = int(round(max(0.0, min(max(y1, y2), float(height)))))
+    return [left, top, right, bottom]
+
+
+def convert_box_to_yolo(
+    box: list[float],
+    width: int,
+    height: int,
+) -> tuple[float, float, float, float]:
+    x1, y1, x2, y2 = _clamp_box_to_image(box, width, height)
+    box_width = max(0, x2 - x1)
+    box_height = max(0, y2 - y1)
+    x_center = x1 + box_width / 2
+    y_center = y1 + box_height / 2
+    return (
+        x_center / width,
+        y_center / height,
+        box_width / width,
+        box_height / height,
+    )
+
+
+def save_annotation_metadata(
+    metadata: dict,
+    *,
+    pending: bool = False,
+) -> str:
+    dataset_dir = _ensure_yolo_dataset_dirs()
+    target_dir = dataset_dir / ("pending_review" if pending else "metadata")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    metadata_path = target_dir / f"{metadata['annotation_id']}.json"
+    metadata_path.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+    return str(metadata_path)
+
+
+def save_yolo_annotation(
+    *,
+    session: RecognitionSession,
+    review: DetectionReview,
+    box: list[float],
+    product: Product | None = None,
+    displayed_box: list[float] | None = None,
+    display_size: list[int] | None = None,
+    source: str = "human_missing_box",
+    split: str = "train",
+) -> dict:
+    if split not in {"train", "val"}:
+        split = "train"
+    if not os.path.exists(session.original_image_path):
+        raise HTTPException(status_code=400, detail="Original session image is unavailable")
+
+    dataset_dir = _ensure_yolo_dataset_dirs()
+    image = Image.open(session.original_image_path).convert("RGB")
+    width, height = image.size
+    if width <= 0 or height <= 0:
+        raise HTTPException(status_code=400, detail="Original session image is invalid")
+
+    clamped_box = _clamp_box_to_image(box, width, height)
+    if clamped_box[2] - clamped_box[0] < 10 or clamped_box[3] - clamped_box[1] < 10:
+        raise HTTPException(status_code=400, detail="Selected box is too small")
+
+    yolo_box = convert_box_to_yolo(clamped_box, width, height)
+    label_line = "0 " + " ".join(f"{value:.6f}" for value in yolo_box)
+    stem = f"session_{session.id}"
+    annotation_id = f"{stem}_review_{review.id}"
+    image_path = dataset_dir / "images" / split / f"{stem}.jpg"
+    label_path = dataset_dir / "labels" / split / f"{stem}.txt"
+
+    if not image_path.exists():
+        image.save(image_path, format="JPEG", quality=92)
+
+    existing_lines = []
+    if label_path.exists():
+        existing_lines = [
+            line.strip()
+            for line in label_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    if label_line not in existing_lines:
+        existing_lines.append(label_line)
+        label_path.write_text("\n".join(existing_lines) + "\n", encoding="utf-8")
+
+    metadata = {
+        "annotation_id": annotation_id,
+        "original_filename": Path(session.original_image_path).name,
+        "saved_image_path": str(image_path),
+        "saved_label_path": str(label_path),
+        "product_id": product.product_id if product is not None else None,
+        "product_name": product.name if product is not None else None,
+        "box_original_pixels": {
+            "x1": clamped_box[0],
+            "y1": clamped_box[1],
+            "x2": clamped_box[2],
+            "y2": clamped_box[3],
+        },
+        "box_display_pixels": displayed_box,
+        "display_size": display_size,
+        "yolo_box": {
+            "class_id": 0,
+            "x_center": yolo_box[0],
+            "y_center": yolo_box[1],
+            "width": yolo_box[2],
+            "height": yolo_box[3],
+        },
+        "label": "product",
+        "source": source,
+        "model_version": session.model_version,
+        "session_id": session.id,
+        "review_id": review.id,
+        "created_at": datetime.utcnow().isoformat() + "Z",
+    }
+    metadata_path = save_annotation_metadata(metadata)
+    return {
+        "x1": clamped_box[0],
+        "y1": clamped_box[1],
+        "x2": clamped_box[2],
+        "y2": clamped_box[3],
+        "label": "product",
+        "product_id": product.product_id if product is not None else None,
+        "source": source,
+        "image_path": str(image_path),
+        "label_path": str(label_path),
+        "metadata_path": metadata_path,
+    }
+
+
+def save_correction_event_metadata(
+    *,
+    session: RecognitionSession,
+    review: DetectionReview,
+    source: str,
+) -> str | None:
+    if not os.path.exists(session.original_image_path):
+        return None
+
+    metadata = {
+        "annotation_id": f"session_{session.id}_review_{review.id}_{source}",
+        "original_filename": Path(session.original_image_path).name,
+        "saved_image_path": session.original_image_path,
+        "saved_label_path": None,
+        "product_id": review.confirmed_product_id,
+        "product_name": review.confirmed_product.name
+        if review.confirmed_product is not None
+        else None,
+        "box_original_pixels": {
+            "x1": review.original_box_x1,
+            "y1": review.original_box_y1,
+            "x2": review.original_box_x2,
+            "y2": review.original_box_y2,
+        },
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "source": source,
+        "model_version": session.model_version,
+        "session_id": session.id,
+        "review_id": review.id,
+        "user_decision": review.user_decision,
+        "yolo_positive": False,
+    }
+    return save_annotation_metadata(metadata, pending=True)
+
+
+def export_yolo_data_yaml() -> str:
+    dataset_dir = _ensure_yolo_dataset_dirs()
+    data_yaml_path = dataset_dir / "data.yaml"
+    data_yaml_path.write_text(
+        YOLO_DATA_YAML.format(dataset_root=dataset_dir.as_posix()),
+        encoding="utf-8",
+    )
+    return str(data_yaml_path)
+
+
+def _yolo_dataset_summary() -> YoloDatasetSummaryResponse:
+    dataset_dir = _ensure_yolo_dataset_dirs()
+    image_count = len(list((dataset_dir / "images").glob("*/*")))
+    label_files = list((dataset_dir / "labels").glob("*/*.txt"))
+    box_count = 0
+    for label_file in label_files:
+        box_count += sum(
+            1
+            for line in label_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        )
+
+    pending_review_count = len(list((dataset_dir / "pending_review").glob("*.json")))
+    data_yaml_path = dataset_dir / "data.yaml"
+    return YoloDatasetSummaryResponse(
+        dataset_dir=str(dataset_dir),
+        image_count=image_count,
+        label_file_count=len(label_files),
+        box_count=box_count,
+        pending_review_count=pending_review_count,
+        data_yaml_path=str(data_yaml_path) if data_yaml_path.exists() else None,
+    )
 
 
 def _image_to_base64(path: str | None, max_size: tuple[int, int] | None = None) -> str | None:
@@ -316,7 +568,10 @@ def _review_candidates(review: DetectionReview) -> list[CandidateResponse]:
     return [CandidateResponse(**candidate) for candidate in raw_candidates]
 
 
-def _review_response(review: DetectionReview) -> DetectionReviewResponse:
+def _review_response(
+    review: DetectionReview,
+    yolo_annotation: dict | None = None,
+) -> DetectionReviewResponse:
     return DetectionReviewResponse(
         id=review.id,
         session_id=review.session_id,
@@ -335,6 +590,7 @@ def _review_response(review: DetectionReview) -> DetectionReviewResponse:
         matched_embedding_id=review.matched_embedding_id,
         matched_view_label=review.matched_view_label,
         candidates=_review_candidates(review),
+        yolo_annotation=yolo_annotation,
         created_at=review.created_at,
     )
 
@@ -915,6 +1171,20 @@ def get_review_session(session_id: int, db: Session = Depends(get_db)):
     )
 
 
+@app.get("/api/v1/yolo-dataset/summary", response_model=YoloDatasetSummaryResponse)
+def get_yolo_dataset_summary():
+    return _yolo_dataset_summary()
+
+
+@app.post("/api/v1/yolo-dataset/export-yaml", response_model=YoloDatasetExportResponse)
+def create_yolo_dataset_yaml():
+    data_yaml_path = export_yolo_data_yaml()
+    return YoloDatasetExportResponse(
+        data_yaml_path=data_yaml_path,
+        summary=_yolo_dataset_summary(),
+    )
+
+
 @app.post(
     "/api/v1/review/detections/{review_id}",
     response_model=DetectionReviewResponse,
@@ -997,12 +1267,46 @@ def update_detection_review(
             )
         )
 
+    yolo_annotation = None
+    if payload.use_for_yolo_training:
+        if payload.user_decision not in YOLO_POSITIVE_DECISIONS:
+            raise HTTPException(
+                status_code=400,
+                detail="Only positive review decisions can be saved as YOLO labels",
+            )
+        if review.session is None:
+            raise HTTPException(status_code=400, detail="Review session is unavailable")
+        yolo_product = db.get(Product, confirmed_product_id) if confirmed_product_id else None
+        yolo_box = _box_from_review(review, "corrected") or _box_from_review(review, "original")
+        if yolo_box is None:
+            raise HTTPException(status_code=400, detail="Review box is unavailable")
+        yolo_annotation = save_yolo_annotation(
+            session=review.session,
+            review=review,
+            box=yolo_box,
+            product=yolo_product,
+            source=f"human_{payload.user_decision}",
+        )
+    elif payload.user_decision in {
+        "needs_review",
+        "not_product",
+        "unknown",
+        "rejected_detection",
+        "wrong_sku",
+    }:
+        if review.session is not None:
+            save_correction_event_metadata(
+                session=review.session,
+                review=review,
+                source=f"human_{payload.user_decision}",
+            )
+
     db.flush()
     _update_session_status(db, review.session)
 
     db.commit()
     db.refresh(review)
-    return _review_response(review)
+    return _review_response(review, yolo_annotation=yolo_annotation)
 
 
 @app.post(
@@ -1067,10 +1371,24 @@ def add_manual_detection(
     db.add(review)
     db.flush()
     _recognize_review_crop(db, review)
+    yolo_product = (
+        db.get(Product, payload.confirmed_product_id)
+        if payload.confirmed_product_id
+        else None
+    )
+    yolo_annotation = save_yolo_annotation(
+        session=session,
+        review=review,
+        box=corrected_box,
+        product=yolo_product,
+        displayed_box=payload.displayed_box,
+        display_size=payload.display_size,
+        source=payload.source or "human_missing_box",
+    )
     _update_session_status(db, session)
     db.commit()
     db.refresh(review)
-    return _review_response(review)
+    return _review_response(review, yolo_annotation=yolo_annotation)
 
 
 @app.get(
