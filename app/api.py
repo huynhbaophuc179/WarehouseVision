@@ -53,6 +53,7 @@ REVIEW_DECISIONS = {
     "accepted",
     "wrong_sku",
     "corrected_product",
+    "needs_review",
     "not_product",
     "unknown",
     "rejected_detection",
@@ -153,6 +154,12 @@ class DetectionReviewUpdateRequest(BaseModel):
     reference_quality_status: str = "pending"
 
 
+class ManualDetectionRequest(BaseModel):
+    corrected_box: list[float]
+    confirmed_product_id: str | None = None
+    user_decision: str = "manually_added"
+
+
 class DetectionReviewResponse(BaseModel):
     id: int
     session_id: int
@@ -186,6 +193,15 @@ class RecognitionSessionSummary(BaseModel):
 class RecognitionSessionDetail(RecognitionSessionSummary):
     original_image_base64: str | None
     detections: list[DetectionReviewResponse]
+
+
+class ProductEmbeddingQualityStatusRequest(BaseModel):
+    quality_status: str
+
+
+class ProductEmbeddingReviewResponse(ProductEmbeddingResponse):
+    product_name: str | None
+    image_preview_base64: str | None
 
 
 def get_db():
@@ -320,6 +336,112 @@ def _review_response(review: DetectionReview) -> DetectionReviewResponse:
         matched_view_label=review.matched_view_label,
         candidates=_review_candidates(review),
         created_at=review.created_at,
+    )
+
+
+def _candidate_dicts(candidates: list[CandidateResponse]) -> list[dict]:
+    return [
+        candidate.model_dump() if hasattr(candidate, "model_dump") else candidate.dict()
+        for candidate in candidates
+    ]
+
+
+def _recognize_review_crop(db: Session, review: DetectionReview) -> None:
+    if not review.crop_path or not os.path.exists(review.crop_path):
+        review.predicted_product_id = None
+        review.detector_confidence = None
+        review.top1_distance = None
+        review.top2_distance = None
+        review.distance_margin = None
+        review.matched_embedding_id = None
+        review.matched_view_label = None
+        review.candidates_json = None
+        return
+
+    embedding = process_image(review.crop_path)
+    results = _nearest_product_candidates(
+        db,
+        embedding,
+        limit=RECOGNITION_CANDIDATE_LIMIT,
+    )
+
+    if not results:
+        review.predicted_product_id = None
+        review.top1_distance = None
+        review.top2_distance = None
+        review.distance_margin = None
+        review.matched_embedding_id = None
+        review.matched_view_label = None
+        review.candidates_json = None
+        return
+
+    product, product_embedding, distance = results[0]
+    top2_distance = results[1][2] if len(results) > 1 else None
+    candidates = [
+        _candidate_response(candidate_product, candidate_embedding, candidate_distance)
+        for candidate_product, candidate_embedding, candidate_distance in results
+    ]
+
+    review.predicted_product_id = product.product_id
+    review.top1_distance = distance
+    review.top2_distance = top2_distance
+    review.distance_margin = (
+        top2_distance - distance if top2_distance is not None else None
+    )
+    review.matched_embedding_id = product_embedding.id
+    review.matched_view_label = product_embedding.view_label
+    review.candidates_json = json.dumps(_candidate_dicts(candidates))
+
+
+def _update_session_status(db: Session, session: RecognitionSession | None) -> None:
+    if session is None:
+        return
+
+    decisions = [
+        decision
+        for (decision,) in db.query(DetectionReview.user_decision)
+        .filter(DetectionReview.session_id == session.id)
+        .all()
+    ]
+
+    if any(decision == "needs_review" for decision in decisions):
+        session.status = "needs_review"
+    elif decisions and all(decision != "ignored" for decision in decisions):
+        session.status = "reviewed"
+    else:
+        session.status = "open"
+
+
+def _validate_box(box: list[float], field_name: str = "box") -> list[float]:
+    if len(box) != 4:
+        raise HTTPException(status_code=400, detail=f"{field_name} must have 4 values")
+
+    x1, y1, x2, y2 = [float(value) for value in box]
+    if x2 <= x1 or y2 <= y1:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} must satisfy x2 > x1 and y2 > y1",
+        )
+
+    return [x1, y1, x2, y2]
+
+
+def _embedding_review_response(
+    product_embedding: ProductEmbedding,
+    product: Product | None,
+) -> ProductEmbeddingReviewResponse:
+    return ProductEmbeddingReviewResponse(
+        id=product_embedding.id,
+        product_id=product_embedding.product_id,
+        product_name=product.name if product is not None else None,
+        view_label=product_embedding.view_label,
+        image_path=product_embedding.image_path,
+        source=product_embedding.source,
+        quality_status=product_embedding.quality_status,
+        image_preview_base64=_image_to_base64(
+            product_embedding.image_path,
+            max_size=(256, 256),
+        ),
     )
 
 
@@ -525,12 +647,7 @@ async def recognize(
             }
 
             def append_review_response(payload: dict) -> None:
-                candidates = [
-                    candidate.model_dump()
-                    if hasattr(candidate, "model_dump")
-                    else candidate.dict()
-                    for candidate in payload.get("candidates", [])
-                ]
+                candidates = _candidate_dicts(payload.get("candidates", []))
                 review = DetectionReview(
                     session_id=session.id,
                     detection_index=index,
@@ -824,6 +941,29 @@ def update_detection_review(
         raise HTTPException(status_code=404, detail="Detection review not found")
 
     confirmed_product_id = payload.confirmed_product_id
+
+    if payload.corrected_box is not None:
+        corrected_box = _validate_box(payload.corrected_box, "corrected_box")
+        (
+            review.corrected_box_x1,
+            review.corrected_box_y1,
+            review.corrected_box_x2,
+            review.corrected_box_y2,
+        ) = corrected_box
+        if review.session is None or not os.path.exists(review.session.original_image_path):
+            raise HTTPException(status_code=400, detail="Original session image is unavailable")
+        crop_path = _save_detection_crop(
+            review.session,
+            review.session.original_image_path,
+            corrected_box,
+            review.detection_index,
+        )
+        if crop_path is None:
+            raise HTTPException(status_code=400, detail="Corrected box could not be cropped")
+        review.crop_path = crop_path
+        review.detector_confidence = None
+        _recognize_review_crop(db, review)
+
     if payload.user_decision == "accepted" and not confirmed_product_id:
         confirmed_product_id = review.predicted_product_id
 
@@ -832,16 +972,6 @@ def update_detection_review(
             status_code=404,
             detail=f"Product not found: {confirmed_product_id}",
         )
-
-    if payload.corrected_box is not None:
-        if len(payload.corrected_box) != 4:
-            raise HTTPException(status_code=400, detail="corrected_box must have 4 values")
-        (
-            review.corrected_box_x1,
-            review.corrected_box_y1,
-            review.corrected_box_x2,
-            review.corrected_box_y2,
-        ) = [float(value) for value in payload.corrected_box]
 
     review.user_decision = payload.user_decision
     review.confirmed_product_id = confirmed_product_id
@@ -867,12 +997,129 @@ def update_detection_review(
             )
         )
 
-    if review.session:
-        review.session.status = "reviewed"
+    db.flush()
+    _update_session_status(db, review.session)
 
     db.commit()
     db.refresh(review)
     return _review_response(review)
+
+
+@app.post(
+    "/api/v1/review/sessions/{session_id}/manual-detection",
+    response_model=DetectionReviewResponse,
+)
+def add_manual_detection(
+    session_id: int,
+    payload: ManualDetectionRequest,
+    db: Session = Depends(get_db),
+):
+    if payload.user_decision not in REVIEW_DECISIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid user_decision: {payload.user_decision}",
+        )
+
+    corrected_box = _validate_box(payload.corrected_box, "corrected_box")
+    session = db.get(RecognitionSession, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Recognition session not found")
+    if not os.path.exists(session.original_image_path):
+        raise HTTPException(status_code=400, detail="Original session image is unavailable")
+
+    if payload.confirmed_product_id and db.get(Product, payload.confirmed_product_id) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Product not found: {payload.confirmed_product_id}",
+        )
+
+    last_review = (
+        db.query(DetectionReview)
+        .filter(DetectionReview.session_id == session.id)
+        .order_by(DetectionReview.detection_index.desc())
+        .first()
+    )
+    detection_index = (last_review.detection_index if last_review else 0) + 1
+    crop_path = _save_detection_crop(
+        session,
+        session.original_image_path,
+        corrected_box,
+        detection_index,
+    )
+    if crop_path is None:
+        raise HTTPException(status_code=400, detail="Manual box could not be cropped")
+
+    review = DetectionReview(
+        session_id=session.id,
+        detection_index=detection_index,
+        original_box_x1=corrected_box[0],
+        original_box_y1=corrected_box[1],
+        original_box_x2=corrected_box[2],
+        original_box_y2=corrected_box[3],
+        corrected_box_x1=corrected_box[0],
+        corrected_box_y1=corrected_box[1],
+        corrected_box_x2=corrected_box[2],
+        corrected_box_y2=corrected_box[3],
+        crop_path=crop_path,
+        confirmed_product_id=payload.confirmed_product_id,
+        user_decision=payload.user_decision,
+    )
+    db.add(review)
+    db.flush()
+    _recognize_review_crop(db, review)
+    _update_session_status(db, session)
+    db.commit()
+    db.refresh(review)
+    return _review_response(review)
+
+
+@app.get(
+    "/api/v1/product-embeddings/pending-review",
+    response_model=list[ProductEmbeddingReviewResponse],
+)
+def list_pending_reference_embeddings(
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    rows = (
+        db.query(ProductEmbedding, Product)
+        .join(Product, ProductEmbedding.product_id == Product.product_id)
+        .filter(ProductEmbedding.source == "user_confirmed_crop")
+        .filter(ProductEmbedding.quality_status == "pending")
+        .order_by(ProductEmbedding.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        _embedding_review_response(product_embedding, product)
+        for product_embedding, product in rows
+    ]
+
+
+@app.post(
+    "/api/v1/product-embeddings/{embedding_id}/quality-status",
+    response_model=ProductEmbeddingReviewResponse,
+)
+def update_product_embedding_quality_status(
+    embedding_id: int,
+    payload: ProductEmbeddingQualityStatusRequest,
+    db: Session = Depends(get_db),
+):
+    if payload.quality_status not in REFERENCE_QUALITY_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid quality_status: {payload.quality_status}",
+        )
+
+    product_embedding = db.get(ProductEmbedding, embedding_id)
+    if product_embedding is None:
+        raise HTTPException(status_code=404, detail="Product embedding not found")
+
+    product_embedding.quality_status = payload.quality_status
+    product = db.get(Product, product_embedding.product_id)
+    db.commit()
+    db.refresh(product_embedding)
+    return _embedding_review_response(product_embedding, product)
 
 
 @app.post("/api/v1/inventory/confirm", response_model=InventoryConfirmResponse)

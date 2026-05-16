@@ -28,7 +28,7 @@ The Streamlit app separates daily work from AI improvement:
 - `Training Mode`: for supervisors/admins reviewing AI behavior. It shows stored recognition sessions, crops, top-K candidates, detector confidence, distance metrics, matched embedding details, and training decisions.
 - `Product Setup`: keeps the existing product creation and multi-image reference upload flow.
 
-Every recognition request creates a review session and one detection review row per box. Operation Mode can save decisions such as accepted, corrected product, unknown, not product, or ignored. Training Mode can later review the same stored session.
+Every recognition request creates a review session and one detection review row per box. Operation Mode can save decisions such as accepted, corrected product, unknown, not product, `needs_review`, or ignored. Training Mode can later review the same stored session.
 
 ## Run With Docker Compose
 
@@ -232,6 +232,35 @@ curl -X POST http://localhost:8000/api/v1/review/detections/1001 \
   }'
 ```
 
+Send a detection to the review queue without marking the session complete:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/review/detections/1001 \
+  -H "Content-Type: application/json" \
+  -d '{"user_decision": "needs_review"}'
+```
+
+Add a missing product box to a recognition session. The API crops the box from the original image, runs embedding search for candidates, and stores a `manually_added` review row:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/review/sessions/42/manual-detection \
+  -H "Content-Type: application/json" \
+  -d '{
+    "corrected_box": [100, 120, 260, 310],
+    "confirmed_product_id": "CUP-001"
+  }'
+```
+
+Approve or reject a pending user-confirmed crop before it can affect production recognition:
+
+```bash
+curl http://localhost:8000/api/v1/product-embeddings/pending-review
+
+curl -X POST http://localhost:8000/api/v1/product-embeddings/55/quality-status \
+  -H "Content-Type: application/json" \
+  -d '{"quality_status": "approved"}'
+```
+
 ## Environment Variables
 
 API service variables in `docker-compose.yml`:
@@ -312,6 +341,8 @@ The Streamlit recognition screen draws bounding boxes over the uploaded image an
 
 AI recognition never updates stock by itself. The frontend sends reviewed results to `POST /api/v1/inventory/confirm` only when the user clicks `Confirm inventory result`. Rejected detections are returned in the confirmation response and can be collected later as useful examples for improving detector or embedding quality.
 
+When an Operation Mode user selects `Gửi sang Training Review`, the detection is saved as `needs_review`. It is excluded from inventory updates and keeps the session visible for Training Mode follow-up.
+
 ## Progressive Learning Export
 
 Reviewed detections can be exported later for one-class YOLO training:
@@ -320,7 +351,7 @@ Reviewed detections can be exported later for one-class YOLO training:
 docker compose exec api python scripts/export_yolo_dataset.py --output-dir datasets/yolo_product
 ```
 
-Positive product labels are exported for decisions `accepted`, `corrected_product`, `box_adjusted`, and `manually_added`. Decisions such as `not_product`, `unknown`, `rejected_detection`, and `ignored` are not exported as product labels.
+The exporter groups reviews by recognition session: each original image is copied once, and every positive box in that image is written into one YOLO label file. Positive product labels are exported for decisions `accepted`, `corrected_product`, `box_adjusted`, and `manually_added`. Decisions such as `needs_review`, `not_product`, `unknown`, `rejected_detection`, and `ignored` are not exported as product labels.
 
 ## Smoke Checks
 
@@ -337,7 +368,7 @@ These checks do not run YOLO or CLIP inference.
 - The default `yolov8n.pt` model is trained on COCO classes, not industrial inventory parts.
 - Product registration embeds full images by default. If `REGISTRATION_USE_DETECTOR_CROP=true`, multiple detected boxes are rejected and zero boxes can fall back to full image.
 - Recognition uses threshold-based unknown handling and does not update inventory quantities without user confirmation.
-- Box delete/add/adjust interactions in Training Mode are placeholders in this iteration; decisions and corrected-box fields are present for a later canvas-based UI.
+- Training Mode currently uses numeric box forms for manual/add/adjust workflows. A canvas-based delete/add/adjust UI is still a later improvement.
 - Real accuracy depends on training a one-class product detector later and calibrating the similarity threshold with real images.
 - Current recognition is visual-only: no OCR, no fine-tuning, and no custom YOLO model is included yet.
 - Model weights are downloaded on first use unless already cached in the Docker volume.

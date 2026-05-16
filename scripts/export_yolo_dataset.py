@@ -84,25 +84,26 @@ def export_dataset(output_dir: Path, val_every: int = 5) -> int:
         (output_dir / "images" / split).mkdir(parents=True, exist_ok=True)
         (output_dir / "labels" / split).mkdir(parents=True, exist_ok=True)
 
-    exported = 0
+    exported_boxes = 0
     db = SessionLocal()
     try:
-        rows = (
-            db.query(DetectionReview, RecognitionSession)
-            .join(RecognitionSession, DetectionReview.session_id == RecognitionSession.id)
+        sessions = (
+            db.query(RecognitionSession)
+            .join(DetectionReview, DetectionReview.session_id == RecognitionSession.id)
             .filter(DetectionReview.user_decision.in_(tuple(POSITIVE_DECISIONS)))
-            .order_by(DetectionReview.id)
+            .order_by(RecognitionSession.id)
+            .distinct()
             .all()
         )
 
-        for index, (review, session) in enumerate(rows, start=1):
+        for index, session in enumerate(sessions, start=1):
             image_path = Path(session.original_image_path)
             if not image_path.exists():
                 continue
 
             split = "val" if val_every > 0 and index % val_every == 0 else "train"
-            image_name = f"session_{session.id}_review_{review.id}.jpg"
-            label_name = f"session_{session.id}_review_{review.id}.txt"
+            image_name = f"session_{session.id}.jpg"
+            label_name = f"session_{session.id}.txt"
             target_image = output_dir / "images" / split / image_name
             target_label = output_dir / "labels" / split / label_name
 
@@ -110,17 +111,36 @@ def export_dataset(output_dir: Path, val_every: int = 5) -> int:
                 width, height = image.size
                 if width <= 0 or height <= 0:
                     continue
-                yolo_box = _normalise_yolo_box(_box_for_review(review), width, height)
 
-            if yolo_box[2] <= 0 or yolo_box[3] <= 0:
+                reviews = (
+                    db.query(DetectionReview)
+                    .filter(DetectionReview.session_id == session.id)
+                    .filter(DetectionReview.user_decision.in_(tuple(POSITIVE_DECISIONS)))
+                    .order_by(DetectionReview.detection_index)
+                    .all()
+                )
+                label_lines = []
+                for review in reviews:
+                    yolo_box = _normalise_yolo_box(
+                        _box_for_review(review),
+                        width,
+                        height,
+                    )
+                    if yolo_box[2] <= 0 or yolo_box[3] <= 0:
+                        continue
+                    label_lines.append(
+                        "0 " + " ".join(f"{value:.6f}" for value in yolo_box)
+                    )
+
+            if not label_lines:
                 continue
 
             shutil.copyfile(image_path, target_image)
             target_label.write_text(
-                "0 " + " ".join(f"{value:.6f}" for value in yolo_box) + "\n",
+                "\n".join(label_lines) + "\n",
                 encoding="utf-8",
             )
-            exported += 1
+            exported_boxes += len(label_lines)
     finally:
         db.close()
 
@@ -128,7 +148,7 @@ def export_dataset(output_dir: Path, val_every: int = 5) -> int:
         DATA_YAML.format(dataset_root=output_dir.as_posix()),
         encoding="utf-8",
     )
-    return exported
+    return exported_boxes
 
 
 def main() -> None:

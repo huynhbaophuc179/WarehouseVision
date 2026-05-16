@@ -212,6 +212,9 @@ def review_payload_for_item(item):
     elif decision == "reject":
         confirmed_product_id = None
         user_decision = "not_product"
+    elif decision == "report":
+        confirmed_product_id = None
+        user_decision = "needs_review"
     else:
         confirmed_product_id = None
         user_decision = "ignored"
@@ -677,6 +680,108 @@ elif choice == "🧠 Training Mode":
                                         use_container_width=True,
                                     )
 
+                        st.subheader("Add missing product box")
+                        with st.form(f"manual_detection_{session['id']}"):
+                            manual_cols = st.columns(4)
+                            with manual_cols[0]:
+                                manual_x1 = st.number_input(
+                                    "x1",
+                                    min_value=0.0,
+                                    value=0.0,
+                                    key=f"manual_x1_{session['id']}",
+                                )
+                            with manual_cols[1]:
+                                manual_y1 = st.number_input(
+                                    "y1",
+                                    min_value=0.0,
+                                    value=0.0,
+                                    key=f"manual_y1_{session['id']}",
+                                )
+                            with manual_cols[2]:
+                                manual_x2 = st.number_input(
+                                    "x2",
+                                    min_value=0.0,
+                                    value=100.0,
+                                    key=f"manual_x2_{session['id']}",
+                                )
+                            with manual_cols[3]:
+                                manual_y2 = st.number_input(
+                                    "y2",
+                                    min_value=0.0,
+                                    value=100.0,
+                                    key=f"manual_y2_{session['id']}",
+                                )
+                            manual_product_id = st.text_input(
+                                "Confirmed product_id (optional)",
+                                key=f"manual_product_id_{session['id']}",
+                            )
+                            add_manual = st.form_submit_button("Add missing product box")
+
+                            if add_manual:
+                                payload = {
+                                    "corrected_box": [
+                                        manual_x1,
+                                        manual_y1,
+                                        manual_x2,
+                                        manual_y2,
+                                    ],
+                                    "confirmed_product_id": manual_product_id.strip()
+                                    or None,
+                                    "user_decision": "manually_added",
+                                }
+                                try:
+                                    manual_response = requests.post(
+                                        f"{API_URL}/review/sessions/{session['id']}/manual-detection",
+                                        json=payload,
+                                        timeout=120,
+                                    )
+                                except requests.RequestException as exc:
+                                    st.error(f"Không thêm được box thủ công: {exc}")
+                                else:
+                                    if manual_response.status_code == 200:
+                                        manual_payload = manual_response.json()
+                                        st.session_state[
+                                            f"manual_detection_response_{session['id']}"
+                                        ] = manual_payload
+                                        st.success("Đã thêm manual detection.")
+                                    else:
+                                        st.error(
+                                            "Lỗi khi thêm manual detection: "
+                                            f"{manual_response.text}"
+                                        )
+
+                        manual_result = st.session_state.get(
+                            f"manual_detection_response_{session['id']}"
+                        )
+                        if manual_result:
+                            manual_crop = image_from_base64(
+                                manual_result.get("crop_preview_base64")
+                            )
+                            if manual_crop is not None:
+                                st.image(
+                                    manual_crop,
+                                    caption="Manual detection crop",
+                                    width=220,
+                                )
+                            if manual_result.get("candidates"):
+                                st.dataframe(
+                                    [
+                                        {
+                                            "product_id": candidate["product_id"],
+                                            "name": candidate["name"],
+                                            "distance": format_distance(
+                                                candidate["distance"]
+                                            ),
+                                            "embedding": candidate[
+                                                "matched_embedding_id"
+                                            ],
+                                        }
+                                        for candidate in manual_result["candidates"]
+                                    ],
+                                    use_container_width=True,
+                                    hide_index=True,
+                                )
+
                         st.subheader("Detection reviews")
                         for detection in detections:
                             title = (
@@ -753,6 +858,7 @@ elif choice == "🧠 Training Mode":
                                     decisions = [
                                         "accepted",
                                         "corrected_product",
+                                        "needs_review",
                                         "wrong_sku",
                                         "not_product",
                                         "unknown",
@@ -779,6 +885,36 @@ elif choice == "🧠 Training Mode":
                                         "Add this crop as product reference image",
                                         value=False,
                                     )
+                                    current_box = (
+                                        detection.get("corrected_box")
+                                        or detection.get("original_box")
+                                        or [0.0, 0.0, 0.0, 0.0]
+                                    )
+                                    box_cols = st.columns(4)
+                                    with box_cols[0]:
+                                        corrected_x1 = st.number_input(
+                                            "x1",
+                                            value=float(current_box[0]),
+                                            key=f"box_x1_{detection['id']}",
+                                        )
+                                    with box_cols[1]:
+                                        corrected_y1 = st.number_input(
+                                            "y1",
+                                            value=float(current_box[1]),
+                                            key=f"box_y1_{detection['id']}",
+                                        )
+                                    with box_cols[2]:
+                                        corrected_x2 = st.number_input(
+                                            "x2",
+                                            value=float(current_box[2]),
+                                            key=f"box_x2_{detection['id']}",
+                                        )
+                                    with box_cols[3]:
+                                        corrected_y2 = st.number_input(
+                                            "y2",
+                                            value=float(current_box[3]),
+                                            key=f"box_y2_{detection['id']}",
+                                        )
                                     st.caption(
                                         "TODO: interactive box delete/add/adjust canvas. "
                                         "For now, use decisions not_product, box_adjusted, "
@@ -790,6 +926,7 @@ elif choice == "🧠 Training Mode":
                                         confirmed_value = confirmed_product_id.strip()
                                         if selected_decision in {
                                             "wrong_sku",
+                                            "needs_review",
                                             "not_product",
                                             "unknown",
                                             "rejected_detection",
@@ -802,6 +939,16 @@ elif choice == "🧠 Training Mode":
                                             "add_as_reference": add_as_reference,
                                             "reference_quality_status": "pending",
                                         }
+                                        if selected_decision in {
+                                            "box_adjusted",
+                                            "manually_added",
+                                        }:
+                                            payload["corrected_box"] = [
+                                                corrected_x1,
+                                                corrected_y1,
+                                                corrected_x2,
+                                                corrected_y2,
+                                            ]
                                         try:
                                             update_response = requests.post(
                                                 f"{API_URL}/review/detections/{detection['id']}",
@@ -817,6 +964,78 @@ elif choice == "🧠 Training Mode":
                                                 st.error(
                                                     f"Lỗi khi lưu review: {update_response.text}"
                                                 )
+
+    st.divider()
+    st.subheader("Pending reference crops")
+    try:
+        pending_response = requests.get(
+            f"{API_URL}/product-embeddings/pending-review",
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        st.error(f"Không tải được pending reference crops: {exc}")
+    else:
+        if pending_response.status_code != 200:
+            st.error(f"Lỗi khi tải pending references: {pending_response.text}")
+        else:
+            pending_embeddings = pending_response.json()
+            if not pending_embeddings:
+                st.info("Không có pending user-confirmed crop nào.")
+            for embedding in pending_embeddings:
+                with st.expander(
+                    (
+                        f"Embedding #{embedding['id']} - {embedding['product_id']} - "
+                        f"{embedding.get('product_name') or ''}"
+                    ),
+                    expanded=False,
+                ):
+                    preview = image_from_base64(embedding.get("image_preview_base64"))
+                    cols = st.columns([1, 2])
+                    with cols[0]:
+                        if preview is not None:
+                            st.image(preview, caption="Pending crop", width=220)
+                        else:
+                            st.caption("No preview available")
+                    with cols[1]:
+                        st.write(
+                            {
+                                "product_id": embedding["product_id"],
+                                "product_name": embedding.get("product_name"),
+                                "view_label": embedding.get("view_label"),
+                                "source": embedding["source"],
+                                "quality_status": embedding["quality_status"],
+                                "image_path": embedding.get("image_path"),
+                            }
+                        )
+                        status_cols = st.columns(2)
+                        with status_cols[0]:
+                            if st.button(
+                                "Approve",
+                                key=f"approve_embedding_{embedding['id']}",
+                            ):
+                                response = requests.post(
+                                    f"{API_URL}/product-embeddings/{embedding['id']}/quality-status",
+                                    json={"quality_status": "approved"},
+                                    timeout=30,
+                                )
+                                if response.status_code == 200:
+                                    st.success("Approved.")
+                                else:
+                                    st.error(response.text)
+                        with status_cols[1]:
+                            if st.button(
+                                "Reject",
+                                key=f"reject_embedding_{embedding['id']}",
+                            ):
+                                response = requests.post(
+                                    f"{API_URL}/product-embeddings/{embedding['id']}/quality-status",
+                                    json={"quality_status": "rejected"},
+                                    timeout=30,
+                                )
+                                if response.status_code == 200:
+                                    st.success("Rejected.")
+                                else:
+                                    st.error(response.text)
 
 elif choice == "📦 Product Setup":
     st.header("📦 Đăng ký sản phẩm")

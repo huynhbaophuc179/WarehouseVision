@@ -1,4 +1,4 @@
-from app.api import MultiRecognizeResponse, app
+from app.api import MultiRecognizeResponse, REVIEW_DECISIONS, app
 from app.ai_pipeline import (
     YOLO_CONFIDENCE_THRESHOLD,
     YOLO_IOU_THRESHOLD,
@@ -10,6 +10,7 @@ from app.models import (
     ProductEmbedding,
     RecognitionSession,
 )
+from scripts.export_yolo_dataset import POSITIVE_DECISIONS
 
 
 def test_required_routes_exist() -> None:
@@ -24,6 +25,9 @@ def test_required_routes_exist() -> None:
         "/api/v1/review/sessions",
         "/api/v1/review/sessions/{session_id}",
         "/api/v1/review/detections/{review_id}",
+        "/api/v1/review/sessions/{session_id}/manual-detection",
+        "/api/v1/product-embeddings/pending-review",
+        "/api/v1/product-embeddings/{embedding_id}/quality-status",
     }
 
     missing_paths = required_paths - route_paths
@@ -70,6 +74,24 @@ def test_detection_review_feedback_fields_exist() -> None:
     assert not missing_columns, f"Missing detection review columns: {sorted(missing_columns)}"
 
 
+def test_detection_review_model_can_be_created() -> None:
+    review = DetectionReview(
+        session_id=1,
+        detection_index=1,
+        original_box_x1=0.0,
+        original_box_y1=0.0,
+        original_box_x2=100.0,
+        original_box_y2=100.0,
+        user_decision="needs_review",
+    )
+    assert review.user_decision == "needs_review"
+
+
+def test_needs_review_decision_exists_but_is_not_exported_positive() -> None:
+    assert "needs_review" in REVIEW_DECISIONS
+    assert "needs_review" not in POSITIVE_DECISIONS
+
+
 def test_recognize_response_debug_fields_exist() -> None:
     if hasattr(MultiRecognizeResponse, "model_fields"):
         fields = MultiRecognizeResponse.model_fields
@@ -112,6 +134,8 @@ if __name__ == "__main__":
     test_inventory_transaction_model_exists()
     test_review_models_exist()
     test_detection_review_feedback_fields_exist()
+    test_detection_review_model_can_be_created()
+    test_needs_review_decision_exists_but_is_not_exported_positive()
     test_recognize_response_debug_fields_exist()
     test_embedding_route_accepts_full_image_option()
     test_yolo_prediction_defaults_exist()
