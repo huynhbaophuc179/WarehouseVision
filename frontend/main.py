@@ -54,16 +54,16 @@ DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD = float(
 st.set_page_config(page_title="AI Inventory System", layout="wide")
 st.title("Hệ thống Nhận diện & Quản lý Tồn kho AI")
 
-PAGE_OPERATION = "Operation / Recognize products"
-PAGE_PRODUCTS = "Product management"
-PAGE_TRAINING = "Training / Human review"
-PAGE_DRAW_BOX = "Draw missing box"
-PAGE_DATASET = "Dataset / YOLO export"
-PAGE_SETTINGS = "Settings / thresholds"
+PAGE_OPERATION = "Nhận diện / Kiểm kho"
+PAGE_PRODUCTS = "Quản lý sản phẩm"
+PAGE_TRAINING = "Review & sửa lỗi AI"
+PAGE_DRAW_BOX = "Vẽ box sản phẩm bị thiếu"
+PAGE_DATASET = "Dataset YOLO"
+PAGE_SETTINGS = "Cài đặt"
 
 st.sidebar.title("WarehouseVision")
 choice = st.sidebar.radio(
-    "Navigation",
+    "Chức năng",
     [
         PAGE_OPERATION,
         PAGE_PRODUCTS,
@@ -192,6 +192,20 @@ def latest_canvas_rect(canvas_result, original_size, display_size):
     return rect_data["original_box"] if rect_data is not None else None
 
 
+def convert_display_box_to_original(display_box, original_size, display_size):
+    original_width, original_height = original_size
+    display_width, display_height = display_size
+    scale_x = original_width / display_width
+    scale_y = original_height / display_height
+    x1, y1, x2, y2 = [float(value) for value in display_box]
+    return [
+        min(x1, x2) * scale_x,
+        min(y1, y2) * scale_y,
+        max(x1, x2) * scale_x,
+        max(y1, y2) * scale_y,
+    ]
+
+
 def latest_canvas_rect_data(canvas_result, original_size, display_size):
     objects = (canvas_result.json_data or {}).get("objects", [])
     rectangles = [obj for obj in objects if obj.get("type") == "rect"]
@@ -200,19 +214,11 @@ def latest_canvas_rect_data(canvas_result, original_size, display_size):
 
     rect = rectangles[-1]
     display_width, display_height = display_size
-    original_width, original_height = original_size
-    scale_x = original_width / display_width
-    scale_y = original_height / display_height
 
     left = float(rect.get("left", 0.0))
     top = float(rect.get("top", 0.0))
     width = float(rect.get("width", 0.0)) * float(rect.get("scaleX", 1.0))
     height = float(rect.get("height", 0.0)) * float(rect.get("scaleY", 1.0))
-
-    x1 = max(0.0, min(left * scale_x, float(original_width)))
-    y1 = max(0.0, min(top * scale_y, float(original_height)))
-    x2 = max(0.0, min((left + width) * scale_x, float(original_width)))
-    y2 = max(0.0, min((top + height) * scale_y, float(original_height)))
 
     display_box = [
         max(0.0, min(min(left, left + width), float(display_width))),
@@ -220,8 +226,13 @@ def latest_canvas_rect_data(canvas_result, original_size, display_size):
         max(0.0, min(max(left, left + width), float(display_width))),
         max(0.0, min(max(top, top + height), float(display_height))),
     ]
-    original_box = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
+    original_box = convert_display_box_to_original(
+        display_box,
+        original_size,
+        display_size,
+    )
     return {
+        "canvas_box": display_box,
         "displayed_box": display_box,
         "original_box": original_box,
         "display_size": [display_width, display_height],
@@ -520,16 +531,24 @@ def select_review_session(session_prefix):
 
 
 def render_missing_box_canvas(session, key_prefix):
-    original_image = load_image_for_canvas(session.get("original_image_base64"))
-    if original_image is None:
+    preview_image = load_image_for_canvas(session.get("original_image_base64"))
+    if preview_image is None:
         st.warning("Original image is not available for drawing.")
         return
 
-    st.subheader("Draw missing product box")
+    original_width = session.get("original_image_width") or preview_image.width
+    original_height = session.get("original_image_height") or preview_image.height
+    original_size = (int(original_width), int(original_height))
+    preview_size = (
+        session.get("preview_image_width") or preview_image.width,
+        session.get("preview_image_height") or preview_image.height,
+    )
+
+    st.subheader("Vẽ box sản phẩm bị thiếu")
     st.caption("Kéo chuột để khoanh vùng sản phẩm bị detect thiếu.")
 
-    display_width, display_height = display_dimensions(original_image, max_width=900)
-    canvas_background = resized_rgb_image(original_image, (display_width, display_height))
+    display_width, display_height = display_dimensions(preview_image, max_width=900)
+    canvas_background = resized_rgb_image(preview_image, (display_width, display_height))
     canvas_result = st_canvas(
         fill_color="rgba(22, 163, 74, 0.20)",
         stroke_width=3,
@@ -544,34 +563,35 @@ def render_missing_box_canvas(session, key_prefix):
 
     rect_data = latest_canvas_rect_data(
         canvas_result,
-        original_image.size,
+        original_size,
         (display_width, display_height),
     )
     if rect_data is None:
         st.info("Please draw a box around the missing product first.")
     else:
         original_box = rect_data["original_box"]
-        displayed_box = rect_data["displayed_box"]
+        canvas_box = rect_data["canvas_box"]
         st.caption(
-            "Original-coordinate box: "
+            "Final backend crop box: "
             + ", ".join(f"{value:.1f}" for value in original_box)
         )
         with st.expander("Coordinate debug", expanded=False):
             st.write(
                 {
-                    "displayed_box": displayed_box,
-                    "original_box": original_box,
+                    "canvas_box": canvas_box,
+                    "preview_size": list(preview_size),
                     "display_size": rect_data["display_size"],
-                    "original_size": list(original_image.size),
+                    "original_image_size": list(original_size),
+                    "final_backend_crop_box": original_box,
                 }
             )
 
-        if box_outside_image(original_box, original_image.size):
+        if box_outside_image(original_box, original_size):
             st.warning("Selected box is outside the image bounds.")
         elif box_is_too_small(original_box):
             st.warning("Selected box is too small.")
         else:
-            preview_crop = crop_from_box(original_image, original_box)
+            preview_crop = crop_from_box(canvas_background, canvas_box)
             st.image(preview_crop, caption="Crop preview", width=240)
 
     drawn_product_id = st.text_input(
@@ -596,7 +616,7 @@ def render_missing_box_canvas(session, key_prefix):
         if box_is_too_small(original_box):
             st.warning("Selected box is too small.")
             return
-        if box_outside_image(original_box, original_image.size):
+        if box_outside_image(original_box, original_size):
             st.warning("Selected box is outside the image bounds.")
             return
         if not confirm_save:
@@ -700,7 +720,7 @@ def render_missing_box_canvas(session, key_prefix):
                 manual_box = [manual_x1, manual_y1, manual_x2, manual_y2]
                 if box_is_too_small(manual_box):
                     st.warning("Selected box is too small.")
-                elif box_outside_image(manual_box, original_image.size):
+                elif box_outside_image(manual_box, original_size):
                     st.warning("Selected box is outside the image bounds.")
                 elif not confirm_manual:
                     st.warning("Please confirm save before adding this annotation.")
@@ -733,7 +753,7 @@ def render_missing_box_canvas(session, key_prefix):
 
 
 def render_dataset_export_page():
-    st.header("Dataset / YOLO export")
+    st.header("Dataset YOLO")
     try:
         summary_response = requests.get(
             f"{API_URL}/yolo-dataset/summary",
@@ -775,7 +795,7 @@ def render_dataset_export_page():
 
 
 def render_settings_page():
-    st.header("Settings / thresholds")
+    st.header("Cài đặt")
     st.caption("Các giá trị này đang được set bằng environment variables trong API.")
     st.write(
         {
@@ -792,7 +812,7 @@ def render_settings_page():
 
 
 if choice == PAGE_OPERATION:
-    st.header("Operation / Recognize products")
+    st.header("Nhận diện / Kiểm kho")
     camera_file = st.camera_input("Live Camera")
     uploaded_file = st.file_uploader(
         "Hoặc chọn ảnh sản phẩm...",
@@ -1014,7 +1034,7 @@ if choice == PAGE_OPERATION:
             st.session_state["feedback_save_response"] = feedback_rows
             failed_feedback = [row for row in feedback_rows if row["status"] == "failed"]
             if failed_feedback:
-                st.warning("Một số feedback chưa lưu được. Kiểm tra Training Mode để rà lại.")
+                st.warning("Một số feedback chưa lưu được. Kiểm tra Review & sửa lỗi AI để rà lại.")
             try:
                 confirm_response = submit_inventory_confirmation(results)
             except requests.RequestException as exc:
@@ -1051,7 +1071,7 @@ if choice == PAGE_OPERATION:
                 )
 
 elif choice == PAGE_TRAINING:
-    st.header("Training / Human review")
+    st.header("Review & sửa lỗi AI")
 
     try:
         sessions_response = requests.get(
@@ -1140,7 +1160,7 @@ elif choice == PAGE_TRAINING:
 
                         st.info(
                             "Để thêm sản phẩm bị detect thiếu, mở trang "
-                            "'Draw missing box' ở sidebar."
+                            "'Vẽ box sản phẩm bị thiếu' ở sidebar."
                         )
 
                         st.subheader("Detection reviews")
@@ -1281,9 +1301,8 @@ elif choice == PAGE_TRAINING:
                                             key=f"box_y2_{detection['id']}",
                                         )
                                     st.caption(
-                                        "TODO: interactive box delete/add/adjust canvas. "
-                                        "For now, use decisions not_product, box_adjusted, "
-                                        "or manually_added to mark the review intent."
+                                        "Dùng trang 'Vẽ box sản phẩm bị thiếu' để thêm "
+                                        "box mới trực tiếp trên ảnh."
                                     )
                                     submitted = st.form_submit_button("Save review")
 
@@ -1404,7 +1423,7 @@ elif choice == PAGE_TRAINING:
                                     st.error(response.text)
 
 elif choice == PAGE_DRAW_BOX:
-    st.header("Draw missing box")
+    st.header("Vẽ box sản phẩm bị thiếu")
     st.caption("Chọn một recognition session rồi vẽ box còn thiếu trực tiếp trên ảnh.")
     selected_session = select_review_session("draw_box_page")
     if selected_session is not None:
@@ -1417,7 +1436,7 @@ elif choice == PAGE_SETTINGS:
     render_settings_page()
 
 elif choice == PAGE_PRODUCTS:
-    st.header("Product management")
+    st.header("Quản lý sản phẩm")
 
     with st.form("reg_form"):
         p_id = st.text_input("Mã sản phẩm (Product ID)")

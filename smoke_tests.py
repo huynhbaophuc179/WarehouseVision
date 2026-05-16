@@ -3,6 +3,7 @@ from app.api import (
     REVIEW_DECISIONS,
     app,
     convert_box_to_yolo,
+    convert_display_box_to_original,
 )
 from app.ai_pipeline import (
     YOLO_CONFIDENCE_THRESHOLD,
@@ -123,6 +124,23 @@ def test_recognize_response_debug_fields_exist() -> None:
     assert not missing_fields, f"Missing response fields: {sorted(missing_fields)}"
 
 
+def test_review_session_response_image_size_fields_exist() -> None:
+    from app.api import RecognitionSessionDetail
+
+    if hasattr(RecognitionSessionDetail, "model_fields"):
+        fields = RecognitionSessionDetail.model_fields
+    else:
+        fields = RecognitionSessionDetail.__fields__
+    required_fields = {
+        "original_image_width",
+        "original_image_height",
+        "preview_image_width",
+        "preview_image_height",
+    }
+    missing_fields = required_fields - set(fields)
+    assert not missing_fields, f"Missing response fields: {sorted(missing_fields)}"
+
+
 def test_embedding_route_accepts_full_image_option() -> None:
     route = next(
         route
@@ -151,6 +169,16 @@ def test_yolo_box_conversion() -> None:
     assert round(height, 3) == 0.6
 
 
+def test_canvas_box_converts_to_original_coordinates() -> None:
+    assert convert_display_box_to_original(
+        [90.0, 60.0, 180.0, 120.0],
+        original_width=3000,
+        original_height=2000,
+        display_width=900,
+        display_height=600,
+    ) == [300.0, 200.0, 600.0, 400.0]
+
+
 if __name__ == "__main__":
     test_drawable_canvas_dependency_declared()
     test_required_routes_exist()
@@ -163,7 +191,9 @@ if __name__ == "__main__":
     test_detection_review_model_can_be_created()
     test_needs_review_decision_exists_but_is_not_exported_positive()
     test_recognize_response_debug_fields_exist()
+    test_review_session_response_image_size_fields_exist()
     test_embedding_route_accepts_full_image_option()
     test_yolo_prediction_defaults_exist()
     test_yolo_box_conversion()
+    test_canvas_box_converts_to_original_coordinates()
     print("Smoke checks passed")

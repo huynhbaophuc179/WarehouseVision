@@ -210,6 +210,10 @@ class RecognitionSessionSummary(BaseModel):
 
 class RecognitionSessionDetail(RecognitionSessionSummary):
     original_image_base64: str | None
+    original_image_width: int | None
+    original_image_height: int | None
+    preview_image_width: int | None
+    preview_image_height: int | None
     detections: list[DetectionReviewResponse]
 
 
@@ -303,6 +307,24 @@ def convert_box_to_yolo(
         box_width / width,
         box_height / height,
     )
+
+
+def convert_display_box_to_original(
+    display_box: list[float],
+    original_width: int,
+    original_height: int,
+    display_width: int,
+    display_height: int,
+) -> list[float]:
+    scale_x = original_width / display_width
+    scale_y = original_height / display_height
+    x1, y1, x2, y2 = [float(value) for value in display_box]
+    return [
+        min(x1, x2) * scale_x,
+        min(y1, y2) * scale_y,
+        max(x1, x2) * scale_x,
+        max(y1, y2) * scale_y,
+    ]
 
 
 def save_annotation_metadata(
@@ -481,9 +503,20 @@ def _yolo_dataset_summary() -> YoloDatasetSummaryResponse:
     )
 
 
-def _image_to_base64(path: str | None, max_size: tuple[int, int] | None = None) -> str | None:
+def _image_dimensions(path: str | None) -> tuple[int | None, int | None]:
     if not path or not os.path.exists(path):
-        return None
+        return None, None
+
+    with Image.open(path) as image:
+        return image.size
+
+
+def _image_to_base64_with_size(
+    path: str | None,
+    max_size: tuple[int, int] | None = None,
+) -> tuple[str | None, int | None, int | None]:
+    if not path or not os.path.exists(path):
+        return None, None, None
 
     image = Image.open(path).convert("RGB")
     if max_size is not None:
@@ -492,7 +525,12 @@ def _image_to_base64(path: str | None, max_size: tuple[int, int] | None = None) 
     buffer = BytesIO()
     image.save(buffer, format="JPEG", quality=85)
     buffer.seek(0)
-    return base64.b64encode(buffer.read()).decode("ascii")
+    return base64.b64encode(buffer.read()).decode("ascii"), image.width, image.height
+
+
+def _image_to_base64(path: str | None, max_size: tuple[int, int] | None = None) -> str | None:
+    image_base64, _, _ = _image_to_base64_with_size(path, max_size=max_size)
+    return image_base64
 
 
 def _create_recognition_session(
@@ -1156,6 +1194,11 @@ def get_review_session(session_id: int, db: Session = Depends(get_db)):
         .order_by(DetectionReview.detection_index)
         .all()
     )
+    original_width, original_height = _image_dimensions(session.original_image_path)
+    preview_base64, preview_width, preview_height = _image_to_base64_with_size(
+        session.original_image_path,
+        max_size=(1200, 1200),
+    )
     return RecognitionSessionDetail(
         id=session.id,
         original_image_path=session.original_image_path,
@@ -1163,10 +1206,11 @@ def get_review_session(session_id: int, db: Session = Depends(get_db)):
         mode=session.mode,
         model_version=session.model_version,
         created_at=session.created_at,
-        original_image_base64=_image_to_base64(
-            session.original_image_path,
-            max_size=(1200, 1200),
-        ),
+        original_image_base64=preview_base64,
+        original_image_width=original_width,
+        original_image_height=original_height,
+        preview_image_width=preview_width,
+        preview_image_height=preview_height,
         detections=[_review_response(review) for review in detections],
     )
 

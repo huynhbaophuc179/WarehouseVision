@@ -24,12 +24,12 @@ Recognition responses include a small base64 JPEG crop preview for every detecte
 
 The Streamlit app separates daily work from AI improvement:
 
-- `Operation Mode`: for warehouse scanning. It shows the uploaded image with bounding boxes, a simple product list, and user decisions for inventory confirmation. Technical fields stay hidden under `Technical Details`.
-- `Training Mode`: for supervisors/admins reviewing AI behavior. It shows stored recognition sessions, crops, top-K candidates, detector confidence, distance metrics, matched embedding details, and training decisions.
-- `Product management`: keeps the existing product creation and multi-image reference upload flow.
-- `Draw missing box`: lets a reviewer draw one missing product box directly on the source image, preview the crop, and save it as a one-class YOLO `product` annotation.
-- `Dataset / YOLO export`: shows local dataset counts and creates or refreshes `data.yaml`.
-- `Settings / thresholds`: summarizes the main runtime threshold knobs.
+- `Nhận diện / Kiểm kho`: for warehouse scanning. It shows the uploaded image with bounding boxes, a simple product list, and user decisions for inventory confirmation. Technical fields stay hidden under `Technical Details`.
+- `Quản lý sản phẩm`: keeps the existing product creation and multi-image reference upload flow.
+- `Review & sửa lỗi AI`: for supervisors/admins reviewing AI behavior. It shows stored recognition sessions, crops, top-K candidates, detector confidence, distance metrics, matched embedding details, and training decisions.
+- `Vẽ box sản phẩm bị thiếu`: lets a reviewer draw one missing product box directly on the source image, preview the crop, and save it as a one-class YOLO `product` annotation.
+- `Dataset YOLO`: shows local dataset counts and creates or refreshes `data.yaml`.
+- `Cài đặt`: summarizes the main runtime threshold knobs.
 
 Every recognition request creates a review session and one detection review row per box. Operation Mode can save decisions such as accepted, corrected product, unknown, not product, `needs_review`, or ignored. Training Mode can later review the same stored session.
 
