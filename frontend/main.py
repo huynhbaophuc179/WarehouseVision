@@ -5,6 +5,7 @@ from io import BytesIO
 import requests
 import streamlit as st
 from PIL import Image, ImageDraw
+from streamlit_drawable_canvas import st_canvas
 
 API_URL = "http://api:8000/api/v1"
 DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD = float(
@@ -108,6 +109,44 @@ def image_from_base64(image_base64):
         return Image.open(BytesIO(base64.b64decode(image_base64)))
     except Exception:
         return None
+
+
+def display_dimensions(image, max_width=900):
+    original_width, original_height = image.size
+    if original_width <= max_width:
+        return original_width, original_height
+    display_width = max_width
+    display_height = int(original_height * display_width / original_width)
+    return display_width, display_height
+
+
+def latest_canvas_rect(canvas_result, original_size, display_size):
+    objects = (canvas_result.json_data or {}).get("objects", [])
+    rectangles = [obj for obj in objects if obj.get("type") == "rect"]
+    if not rectangles:
+        return None
+
+    rect = rectangles[-1]
+    display_width, display_height = display_size
+    original_width, original_height = original_size
+    scale_x = original_width / display_width
+    scale_y = original_height / display_height
+
+    left = float(rect.get("left", 0.0))
+    top = float(rect.get("top", 0.0))
+    width = float(rect.get("width", 0.0)) * float(rect.get("scaleX", 1.0))
+    height = float(rect.get("height", 0.0)) * float(rect.get("scaleY", 1.0))
+
+    x1 = max(0.0, min(left * scale_x, float(original_width)))
+    y1 = max(0.0, min(top * scale_y, float(original_height)))
+    x2 = max(0.0, min((left + width) * scale_x, float(original_width)))
+    y2 = max(0.0, min((top + height) * scale_y, float(original_height)))
+
+    return [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
+
+
+def box_is_too_small(box, min_size=16.0):
+    return (box[2] - box[0]) < min_size or (box[3] - box[1]) < min_size
 
 
 def operation_result_rows(results):
@@ -680,75 +719,147 @@ elif choice == "🧠 Training Mode":
                                         use_container_width=True,
                                     )
 
-                        st.subheader("Add missing product box")
-                        with st.form(f"manual_detection_{session['id']}"):
-                            manual_cols = st.columns(4)
-                            with manual_cols[0]:
-                                manual_x1 = st.number_input(
-                                    "x1",
-                                    min_value=0.0,
-                                    value=0.0,
-                                    key=f"manual_x1_{session['id']}",
-                                )
-                            with manual_cols[1]:
-                                manual_y1 = st.number_input(
-                                    "y1",
-                                    min_value=0.0,
-                                    value=0.0,
-                                    key=f"manual_y1_{session['id']}",
-                                )
-                            with manual_cols[2]:
-                                manual_x2 = st.number_input(
-                                    "x2",
-                                    min_value=0.0,
-                                    value=100.0,
-                                    key=f"manual_x2_{session['id']}",
-                                )
-                            with manual_cols[3]:
-                                manual_y2 = st.number_input(
-                                    "y2",
-                                    min_value=0.0,
-                                    value=100.0,
-                                    key=f"manual_y2_{session['id']}",
-                                )
-                            manual_product_id = st.text_input(
-                                "Confirmed product_id (optional)",
-                                key=f"manual_product_id_{session['id']}",
+                        st.subheader("Draw missing product box")
+                        if original_image is None:
+                            st.warning("Original image is not available for drawing.")
+                        else:
+                            display_width, display_height = display_dimensions(
+                                original_image,
+                                max_width=900,
                             )
-                            add_manual = st.form_submit_button("Add missing product box")
+                            canvas_background = original_image.copy()
+                            canvas_background.thumbnail((display_width, display_height))
+                            canvas_result = st_canvas(
+                                fill_color="rgba(22, 163, 74, 0.20)",
+                                stroke_width=3,
+                                stroke_color="#16a34a",
+                                background_image=canvas_background,
+                                height=display_height,
+                                width=display_width,
+                                drawing_mode="rect",
+                                update_streamlit=True,
+                                key=f"missing_box_canvas_{session['id']}",
+                            )
+                            drawn_product_id = st.text_input(
+                                "Confirmed product_id (optional)",
+                                key=f"drawn_product_id_{session['id']}",
+                            )
+                            if st.button(
+                                "Add drawn box as missing product",
+                                key=f"add_drawn_box_{session['id']}",
+                            ):
+                                drawn_box = latest_canvas_rect(
+                                    canvas_result,
+                                    original_image.size,
+                                    (display_width, display_height),
+                                )
+                                if drawn_box is None:
+                                    st.warning(
+                                        "Please draw a box around the missing product first."
+                                    )
+                                elif box_is_too_small(drawn_box):
+                                    st.warning("Selected box is too small.")
+                                else:
+                                    payload = {
+                                        "corrected_box": drawn_box,
+                                        "confirmed_product_id": drawn_product_id.strip()
+                                        or None,
+                                        "user_decision": "manually_added",
+                                    }
+                                    try:
+                                        manual_response = requests.post(
+                                            f"{API_URL}/review/sessions/{session['id']}/manual-detection",
+                                            json=payload,
+                                            timeout=120,
+                                        )
+                                    except requests.RequestException as exc:
+                                        st.error(f"Không thêm được box đã vẽ: {exc}")
+                                    else:
+                                        if manual_response.status_code == 200:
+                                            manual_payload = manual_response.json()
+                                            st.session_state[
+                                                f"manual_detection_response_{session['id']}"
+                                            ] = manual_payload
+                                            st.success("Đã thêm box đã vẽ.")
+                                        else:
+                                            st.error(
+                                                "Lỗi khi thêm box đã vẽ: "
+                                                f"{manual_response.text}"
+                                            )
 
-                            if add_manual:
-                                payload = {
-                                    "corrected_box": [
+                        with st.expander("Manual coordinate input", expanded=False):
+                            with st.form(f"manual_detection_{session['id']}"):
+                                manual_cols = st.columns(4)
+                                with manual_cols[0]:
+                                    manual_x1 = st.number_input(
+                                        "x1",
+                                        min_value=0.0,
+                                        value=0.0,
+                                        key=f"manual_x1_{session['id']}",
+                                    )
+                                with manual_cols[1]:
+                                    manual_y1 = st.number_input(
+                                        "y1",
+                                        min_value=0.0,
+                                        value=0.0,
+                                        key=f"manual_y1_{session['id']}",
+                                    )
+                                with manual_cols[2]:
+                                    manual_x2 = st.number_input(
+                                        "x2",
+                                        min_value=0.0,
+                                        value=100.0,
+                                        key=f"manual_x2_{session['id']}",
+                                    )
+                                with manual_cols[3]:
+                                    manual_y2 = st.number_input(
+                                        "y2",
+                                        min_value=0.0,
+                                        value=100.0,
+                                        key=f"manual_y2_{session['id']}",
+                                    )
+                                manual_product_id = st.text_input(
+                                    "Confirmed product_id (optional)",
+                                    key=f"manual_product_id_{session['id']}",
+                                )
+                                add_manual = st.form_submit_button("Add missing product box")
+
+                                if add_manual:
+                                    manual_box = [
                                         manual_x1,
                                         manual_y1,
                                         manual_x2,
                                         manual_y2,
-                                    ],
-                                    "confirmed_product_id": manual_product_id.strip()
-                                    or None,
-                                    "user_decision": "manually_added",
-                                }
-                                try:
-                                    manual_response = requests.post(
-                                        f"{API_URL}/review/sessions/{session['id']}/manual-detection",
-                                        json=payload,
-                                        timeout=120,
-                                    )
-                                except requests.RequestException as exc:
-                                    st.error(f"Không thêm được box thủ công: {exc}")
-                                else:
-                                    if manual_response.status_code == 200:
-                                        manual_payload = manual_response.json()
-                                        st.session_state[
-                                            f"manual_detection_response_{session['id']}"
-                                        ] = manual_payload
-                                        st.success("Đã thêm manual detection.")
+                                    ]
+                                    if box_is_too_small(manual_box):
+                                        st.warning("Selected box is too small.")
                                     else:
-                                        st.error(
-                                            "Lỗi khi thêm manual detection: "
-                                            f"{manual_response.text}"
-                                        )
+                                        payload = {
+                                            "corrected_box": manual_box,
+                                            "confirmed_product_id": manual_product_id.strip()
+                                            or None,
+                                            "user_decision": "manually_added",
+                                        }
+                                        try:
+                                            manual_response = requests.post(
+                                                f"{API_URL}/review/sessions/{session['id']}/manual-detection",
+                                                json=payload,
+                                                timeout=120,
+                                            )
+                                        except requests.RequestException as exc:
+                                            st.error(f"Không thêm được box thủ công: {exc}")
+                                        else:
+                                            if manual_response.status_code == 200:
+                                                manual_payload = manual_response.json()
+                                                st.session_state[
+                                                    f"manual_detection_response_{session['id']}"
+                                                ] = manual_payload
+                                                st.success("Đã thêm manual detection.")
+                                            else:
+                                                st.error(
+                                                    "Lỗi khi thêm manual detection: "
+                                                    f"{manual_response.text}"
+                                                )
 
                         manual_result = st.session_state.get(
                             f"manual_detection_response_{session['id']}"
@@ -760,10 +871,11 @@ elif choice == "🧠 Training Mode":
                             if manual_crop is not None:
                                 st.image(
                                     manual_crop,
-                                    caption="Manual detection crop",
+                                    caption="Crop preview",
                                     width=220,
                                 )
                             if manual_result.get("candidates"):
+                                st.caption("Candidate products")
                                 st.dataframe(
                                     [
                                         {

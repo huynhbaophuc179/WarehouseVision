@@ -13,6 +13,12 @@ from app.models import (
 from scripts.export_yolo_dataset import POSITIVE_DECISIONS
 
 
+def test_drawable_canvas_dependency_declared() -> None:
+    with open("requirements.txt", encoding="utf-8") as requirements:
+        content = requirements.read()
+    assert "streamlit-drawable-canvas" in content
+
+
 def test_required_routes_exist() -> None:
     route_paths = {route.path for route in app.routes}
     required_paths = {
@@ -127,6 +133,7 @@ def test_yolo_prediction_defaults_exist() -> None:
 
 
 if __name__ == "__main__":
+    test_drawable_canvas_dependency_declared()
     test_required_routes_exist()
     test_product_embedding_model_exists()
     test_product_embedding_dimension()

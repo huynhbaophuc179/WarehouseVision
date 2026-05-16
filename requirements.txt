@@ -7,3 +7,4 @@ pgvector==0.4.2
 ultralytics==8.4.46
 transformers==5.7.0
 Pillow==12.2.0
+streamlit-drawable-canvas==0.9.3
