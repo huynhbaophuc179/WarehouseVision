@@ -7,6 +7,45 @@ import streamlit as st
 from PIL import Image, ImageDraw
 from streamlit_drawable_canvas import st_canvas
 
+
+def patch_drawable_canvas_image_to_url():
+    """Restore the private Streamlit helper expected by streamlit-drawable-canvas."""
+    try:
+        from streamlit.elements import image as st_image
+    except Exception:
+        return
+
+    if hasattr(st_image, "image_to_url"):
+        return
+
+    def image_to_url(
+        image,
+        width=None,
+        clamp=False,
+        channels="RGB",
+        output_format="PNG",
+        image_id=None,
+    ):
+        del width, clamp, image_id
+        if channels:
+            image = image.convert(channels)
+
+        buffer = BytesIO()
+        image_format = output_format or "PNG"
+        image.save(buffer, format=image_format)
+        mime_format = (
+            "jpeg"
+            if image_format.lower() in {"jpg", "jpeg"}
+            else image_format.lower()
+        )
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        return f"data:image/{mime_format};base64,{encoded}"
+
+    st_image.image_to_url = image_to_url
+
+
+patch_drawable_canvas_image_to_url()
+
 API_URL = "http://api:8000/api/v1"
 DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD = float(
     os.getenv("DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD", "0.45")
@@ -118,6 +157,13 @@ def display_dimensions(image, max_width=900):
     display_width = max_width
     display_height = int(original_height * display_width / original_width)
     return display_width, display_height
+
+
+def resized_rgb_image(image, size):
+    resampling = getattr(Image, "Resampling", Image).LANCZOS
+    resized = image.convert("RGB").resize(size, resample=resampling)
+    resized.load()
+    return resized
 
 
 def latest_canvas_rect(canvas_result, original_size, display_size):
@@ -690,34 +736,26 @@ elif choice == "🧠 Training Mode":
                         )
                         detections = session.get("detections") or []
 
-                        if original_image is not None:
-                            col1, col2 = st.columns(2)
-                            with col1:
+                        if original_image is not None and original_bytes:
+                            with st.expander("Current detected boxes", expanded=False):
+                                annotated_items = [
+                                    {
+                                        "box": detection.get("corrected_box")
+                                        or detection["original_box"],
+                                        "status": "recognized"
+                                        if detection.get("predicted_product_id")
+                                        else "unknown",
+                                    }
+                                    for detection in detections
+                                ]
                                 st.image(
-                                    original_image,
-                                    caption="Original image",
+                                    draw_annotated_image(
+                                        original_bytes,
+                                        annotated_items,
+                                    ),
+                                    caption="Bounding boxes",
                                     use_container_width=True,
                                 )
-                            with col2:
-                                if original_bytes:
-                                    annotated_items = [
-                                        {
-                                            "box": detection.get("corrected_box")
-                                            or detection["original_box"],
-                                            "status": "recognized"
-                                            if detection.get("predicted_product_id")
-                                            else "unknown",
-                                        }
-                                        for detection in detections
-                                    ]
-                                    st.image(
-                                        draw_annotated_image(
-                                            original_bytes,
-                                            annotated_items,
-                                        ),
-                                        caption="Bounding boxes",
-                                        use_container_width=True,
-                                    )
 
                         st.subheader("Draw missing product box")
                         if original_image is None:
@@ -727,8 +765,13 @@ elif choice == "🧠 Training Mode":
                                 original_image,
                                 max_width=900,
                             )
-                            canvas_background = original_image.copy()
-                            canvas_background.thumbnail((display_width, display_height))
+                            canvas_background = resized_rgb_image(
+                                original_image,
+                                (display_width, display_height),
+                            )
+                            st.caption(
+                                "Kéo chuột để khoanh vùng sản phẩm bị detect thiếu."
+                            )
                             canvas_result = st_canvas(
                                 fill_color="rgba(22, 163, 74, 0.20)",
                                 stroke_width=3,
@@ -740,6 +783,16 @@ elif choice == "🧠 Training Mode":
                                 update_streamlit=True,
                                 key=f"missing_box_canvas_{session['id']}",
                             )
+                            drawn_box = latest_canvas_rect(
+                                canvas_result,
+                                original_image.size,
+                                (display_width, display_height),
+                            )
+                            if drawn_box is not None:
+                                st.caption(
+                                    "Converted original-coordinate box: "
+                                    + ", ".join(f"{value:.1f}" for value in drawn_box)
+                                )
                             drawn_product_id = st.text_input(
                                 "Confirmed product_id (optional)",
                                 key=f"drawn_product_id_{session['id']}",
@@ -748,11 +801,6 @@ elif choice == "🧠 Training Mode":
                                 "Add drawn box as missing product",
                                 key=f"add_drawn_box_{session['id']}",
                             ):
-                                drawn_box = latest_canvas_rect(
-                                    canvas_result,
-                                    original_image.size,
-                                    (display_width, display_height),
-                                )
                                 if drawn_box is None:
                                     st.warning(
                                         "Please draw a box around the missing product first."
