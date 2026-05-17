@@ -114,6 +114,10 @@ def format_confidence(confidence):
     return f"{confidence:.3f}" if confidence is not None else "-"
 
 
+def format_score(score):
+    return f"{score:.2f}" if score is not None else "-"
+
+
 def status_label(status):
     labels = {
         "recognized": "recognized",
@@ -121,6 +125,16 @@ def status_label(status):
         "unknown": "unknown",
     }
     return labels.get(status, status)
+
+
+def confidence_label(level):
+    labels = {
+        "HIGH": "Tin cậy cao",
+        "MEDIUM": "Cần xác nhận",
+        "LOW": "Tin cậy thấp",
+        "UNKNOWN": "Không đủ dữ liệu",
+    }
+    return labels.get(level or "UNKNOWN", level or "Không đủ dữ liệu")
 
 
 def crop_preview_image(crop_preview_base64):
@@ -338,6 +352,7 @@ def operation_result_rows(results):
                 if item.get("inventory_count") is not None
                 else "-",
                 "status": status_label(item["status"]),
+                "confidence_level": confidence_label(item.get("confidence_level")),
                 "detections": 0,
             },
         )
@@ -351,6 +366,7 @@ def operation_result_rows(results):
                 "Tên": item["name"],
                 "Tồn kho": item["inventory_count"],
                 "Trạng thái": item["status"],
+                "Độ tin cậy": item["confidence_level"],
                 "Số box": item["detections"],
             }
         )
@@ -1062,15 +1078,71 @@ if choice == PAGE_OPERATION:
                         "Trạng thái": status_label(item["status"]),
                     }
                 )
+                st.caption(
+                    "Độ tin cậy: "
+                    f"{confidence_label(item.get('confidence_level'))} "
+                    f"(final score {format_score(item.get('final_score'))})"
+                )
+                if item.get("explanation"):
+                    with st.expander("Vì sao AI đề xuất kết quả này", expanded=False):
+                        for explanation in item["explanation"]:
+                            st.write(f"- {explanation}")
+                        if item.get("raw_ocr_text"):
+                            st.caption(f"OCR: {item['raw_ocr_text']}")
 
                 if item["status"] == "uncertain":
                     st.warning("Cần kiểm tra trước khi xác nhận.")
+                if item.get("confidence_level") in {"MEDIUM", "LOW"}:
+                    st.warning("Kết quả này cần người dùng xác nhận trước khi dùng.")
                 detector_confidence = item.get("detector_confidence")
                 if (
                     detector_confidence is not None
                     and detector_confidence < DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD
                 ):
                     st.warning("Crop này có thể không phải sản phẩm hợp lệ.")
+
+                candidates = item.get("candidates") or []
+                if candidates:
+                    st.caption("Top ứng viên sản phẩm")
+                    st.dataframe(
+                        [
+                            {
+                                "Mã SP": candidate.get("product_code")
+                                or candidate["product_id"],
+                                "Tên": candidate.get("product_name")
+                                or candidate.get("name"),
+                                "Điểm ảnh": format_score(
+                                    candidate.get("image_similarity_score")
+                                ),
+                                "Điểm chữ": format_score(
+                                    candidate.get("text_match_score")
+                                ),
+                                "Điểm cuối": format_score(candidate.get("final_score")),
+                                "Độ tin cậy": confidence_label(
+                                    candidate.get("confidence_level")
+                                ),
+                                "Tồn kho": candidate.get("inventory_count"),
+                            }
+                            for candidate in candidates[:5]
+                        ],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                    candidate_cols = st.columns(min(len(candidates[:3]), 3))
+                    for candidate_index, candidate in enumerate(candidates[:3]):
+                        with candidate_cols[candidate_index]:
+                            if st.button(
+                                "Chọn ứng viên",
+                                key=(
+                                    f"choose_candidate_{detection_id}_"
+                                    f"{candidate['product_id']}"
+                                ),
+                            ):
+                                st.session_state[f"decision_{detection_id}"] = "manual"
+                                st.session_state[f"manual_product_{detection_id}"] = (
+                                    candidate["product_id"]
+                                )
+                                st.rerun()
 
                 with st.expander("Technical Details", expanded=False):
                     preview = crop_preview_image(item.get("crop_preview_base64"))
@@ -1091,9 +1163,19 @@ if choice == PAGE_OPERATION:
                             ),
                             "matched_embedding_id": item.get("matched_embedding_id"),
                             "matched_view_label": item.get("matched_view_label"),
+                            "raw_ocr_text": item.get("raw_ocr_text"),
+                            "normalized_ocr_text": item.get("normalized_ocr_text"),
+                            "image_similarity_score": format_score(
+                                item.get("image_similarity_score")
+                            ),
+                            "text_match_score": format_score(item.get("text_match_score")),
+                            "category_match_score": format_score(
+                                item.get("category_match_score")
+                            ),
+                            "final_score": format_score(item.get("final_score")),
+                            "confidence_level": item.get("confidence_level"),
                         }
                     )
-                    candidates = item.get("candidates") or []
                     if candidates:
                         st.dataframe(
                             [
@@ -1102,6 +1184,18 @@ if choice == PAGE_OPERATION:
                                     "name": candidate["name"],
                                     "inventory_count": candidate["inventory_count"],
                                     "distance": format_distance(candidate["distance"]),
+                                    "image_score": format_score(
+                                        candidate.get("image_similarity_score")
+                                    ),
+                                    "text_score": format_score(
+                                        candidate.get("text_match_score")
+                                    ),
+                                    "final_score": format_score(
+                                        candidate.get("final_score")
+                                    ),
+                                    "confidence": candidate.get("confidence_level"),
+                                    "reference": candidate.get("reference_image_path")
+                                    or "-",
                                     "embedding": candidate["matched_embedding_id"],
                                     "view": candidate["matched_view_label"] or "-",
                                 }
@@ -1125,9 +1219,34 @@ if choice == PAGE_OPERATION:
                     "reject": "Không phải sản phẩm",
                     "report": "Gửi sang Training Review",
                 }
+                button_cols = st.columns(4)
+                with button_cols[0]:
+                    if st.button(
+                        "Accept this product",
+                        key=f"accept_{detection_id}",
+                        disabled=not bool(item.get("product_id")),
+                    ):
+                        st.session_state[f"decision_{detection_id}"] = "confirm"
+                        st.rerun()
+                with button_cols[1]:
+                    if st.button("Unknown product", key=f"unknown_{detection_id}"):
+                        st.session_state[f"decision_{detection_id}"] = "unknown"
+                        st.rerun()
+                with button_cols[2]:
+                    if st.button("Reject", key=f"reject_{detection_id}"):
+                        st.session_state[f"decision_{detection_id}"] = "reject"
+                        st.rerun()
+                with button_cols[3]:
+                    if st.button("Send review", key=f"report_{detection_id}"):
+                        st.session_state[f"decision_{detection_id}"] = "report"
+                        st.rerun()
+
                 if not item.get("product_id"):
                     decision_options = ["unknown", "manual", "reject", "report"]
-                elif item["status"] == "uncertain":
+                elif item["status"] == "uncertain" or item.get("confidence_level") in {
+                    "MEDIUM",
+                    "LOW",
+                }:
                     decision_options = ["manual", "confirm", "unknown", "reject", "report"]
 
                 st.radio(

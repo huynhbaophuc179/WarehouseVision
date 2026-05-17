@@ -3,11 +3,16 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import shutil
+import subprocess
 import tempfile
+import unicodedata
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
+from difflib import SequenceMatcher
+from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
 
@@ -45,7 +50,22 @@ SIMILARITY_RECOGNIZED_THRESHOLD = float(
 )
 SIMILARITY_UNKNOWN_THRESHOLD = float(os.getenv("SIMILARITY_UNKNOWN_THRESHOLD", "0.22"))
 SIMILARITY_MARGIN_THRESHOLD = float(os.getenv("SIMILARITY_MARGIN_THRESHOLD", "0.03"))
-RECOGNITION_CANDIDATE_LIMIT = int(os.getenv("RECOGNITION_CANDIDATE_LIMIT", "3"))
+TOP_K_CANDIDATES = int(
+    os.getenv("TOP_K_CANDIDATES", os.getenv("RECOGNITION_CANDIDATE_LIMIT", "5"))
+)
+RECOGNITION_CANDIDATE_LIMIT = TOP_K_CANDIDATES
+ENABLE_OCR = os.getenv("ENABLE_OCR", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+OCR_ENGINE = os.getenv("OCR_ENGINE", "easyocr").strip().lower()
+IMAGE_SIMILARITY_WEIGHT = float(os.getenv("IMAGE_SIMILARITY_WEIGHT", "0.70"))
+TEXT_MATCH_WEIGHT = float(os.getenv("TEXT_MATCH_WEIGHT", "0.25"))
+CATEGORY_MATCH_WEIGHT = float(os.getenv("CATEGORY_MATCH_WEIGHT", "0.05"))
+HIGH_CONFIDENCE_THRESHOLD = float(os.getenv("HIGH_CONFIDENCE_THRESHOLD", "0.85"))
+MEDIUM_CONFIDENCE_THRESHOLD = float(os.getenv("MEDIUM_CONFIDENCE_THRESHOLD", "0.70"))
 MODEL_VERSION = os.getenv("MODEL_VERSION", os.getenv("YOLO_MODEL_PATH", "yolov8n.pt"))
 REVIEW_STORAGE_DIR = Path(os.getenv("REVIEW_STORAGE_DIR", "review_data"))
 YOLO_DATASET_DIR = Path(os.getenv("YOLO_DATASET_DIR", "data/yolo_dataset"))
@@ -103,6 +123,15 @@ class RecognizeResponse(ProductResponse):
 class CandidateResponse(RecognizeResponse):
     matched_embedding_id: int
     matched_view_label: str | None
+    product_code: str | None = None
+    product_name: str | None = None
+    image_similarity_score: float | None = None
+    text_match_score: float | None = None
+    category_match_score: float | None = None
+    final_score: float | None = None
+    reference_image_path: str | None = None
+    confidence_level: str | None = None
+    explanation: list[str] = Field(default_factory=list)
 
 
 class ProductEmbeddingResponse(BaseModel):
@@ -131,6 +160,14 @@ class MultiRecognizeResponse(BaseModel):
     top1_distance: float | None
     top2_distance: float | None
     distance_margin: float | None
+    raw_ocr_text: str | None = None
+    normalized_ocr_text: str | None = None
+    image_similarity_score: float | None = None
+    text_match_score: float | None = None
+    category_match_score: float | None = None
+    final_score: float | None = None
+    confidence_level: str = "UNKNOWN"
+    explanation: list[str] = Field(default_factory=list)
     candidates: list[CandidateResponse] = Field(default_factory=list)
 
 
@@ -496,6 +533,63 @@ def save_correction_event_metadata(
     return save_annotation_metadata(metadata, pending=True)
 
 
+def save_feedback_event_metadata(
+    *,
+    session: RecognitionSession,
+    review: DetectionReview,
+    source: str = "human_feedback",
+) -> str | None:
+    if not os.path.exists(session.original_image_path):
+        return None
+
+    raw_ocr_text, normalized_ocr_text = _extract_ocr_text(review.crop_path)
+    try:
+        top_k_candidates = json.loads(review.candidates_json or "[]")
+    except json.JSONDecodeError:
+        top_k_candidates = []
+
+    metadata = {
+        "annotation_id": f"feedback_{session.id}_{review.id}_{uuid.uuid4().hex[:8]}",
+        "source": source,
+        "session_id": session.id,
+        "review_id": review.id,
+        "detection_id": f"det_{review.detection_index}",
+        "crop_image_path": review.crop_path,
+        "original_image_path": session.original_image_path,
+        "predicted_product_id": review.predicted_product_id,
+        "selected_product_id": review.confirmed_product_id,
+        "user_decision": review.user_decision,
+        "top_k_candidates": top_k_candidates,
+        "image_similarity_scores": [
+            {
+                "product_id": candidate.get("product_id"),
+                "score": candidate.get("image_similarity_score"),
+                "distance": candidate.get("distance"),
+            }
+            for candidate in top_k_candidates
+        ],
+        "raw_ocr_text": raw_ocr_text,
+        "normalized_ocr_text": normalized_ocr_text,
+        "text_match_scores": [
+            {
+                "product_id": candidate.get("product_id"),
+                "score": candidate.get("text_match_score"),
+            }
+            for candidate in top_k_candidates
+        ],
+        "final_scores": [
+            {
+                "product_id": candidate.get("product_id"),
+                "score": candidate.get("final_score"),
+                "confidence_level": candidate.get("confidence_level"),
+            }
+            for candidate in top_k_candidates
+        ],
+        "created_at": datetime.utcnow().isoformat() + "Z",
+    }
+    return save_annotation_metadata(metadata)
+
+
 def export_yolo_data_yaml() -> str:
     dataset_dir = _ensure_yolo_dataset_dirs()
     data_yaml_path = dataset_dir / "data.yaml"
@@ -708,21 +802,23 @@ def _recognize_review_crop(db: Session, review: DetectionReview) -> None:
         review.candidates_json = None
         return
 
-    product, product_embedding, distance = results[0]
-    top2_distance = results[1][2] if len(results) > 1 else None
-    candidates = [
-        _candidate_response(candidate_product, candidate_embedding, candidate_distance)
-        for candidate_product, candidate_embedding, candidate_distance in results
-    ]
+    raw_ocr_text, normalized_ocr_text = _extract_ocr_text(review.crop_path)
+    candidates = _ranked_candidate_responses(
+        results,
+        raw_ocr_text=raw_ocr_text,
+        normalized_ocr_text=normalized_ocr_text,
+    )
+    top_candidate = candidates[0]
+    top2_distance = candidates[1].distance if len(candidates) > 1 else None
 
-    review.predicted_product_id = product.product_id
-    review.top1_distance = distance
+    review.predicted_product_id = top_candidate.product_id
+    review.top1_distance = top_candidate.distance
     review.top2_distance = top2_distance
     review.distance_margin = (
-        top2_distance - distance if top2_distance is not None else None
+        top2_distance - top_candidate.distance if top2_distance is not None else None
     )
-    review.matched_embedding_id = product_embedding.id
-    review.matched_view_label = product_embedding.view_label
+    review.matched_embedding_id = top_candidate.matched_embedding_id
+    review.matched_view_label = top_candidate.matched_view_label
     review.candidates_json = json.dumps(_candidate_dicts(candidates))
 
 
@@ -778,6 +874,304 @@ def _embedding_review_response(
     )
 
 
+@lru_cache(maxsize=1)
+def _easyocr_reader():
+    import easyocr
+
+    return easyocr.Reader(["en"], gpu=False)
+
+
+@lru_cache(maxsize=1)
+def _paddleocr_reader():
+    from paddleocr import PaddleOCR
+
+    return PaddleOCR(use_angle_cls=True, lang="en")
+
+
+def _normalize_text(value: str | None) -> str:
+    if not value:
+        return ""
+
+    ascii_text = unicodedata.normalize("NFKD", value)
+    ascii_text = "".join(
+        character for character in ascii_text if not unicodedata.combining(character)
+    )
+    return re.sub(r"[^a-z0-9]+", " ", ascii_text.lower()).strip()
+
+
+def _compact_text(value: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", "", _normalize_text(value))
+
+
+def _extract_ocr_text(image_path: str | None) -> tuple[str | None, str | None]:
+    if not ENABLE_OCR or not image_path or not os.path.exists(image_path):
+        return None, None
+
+    try:
+        if OCR_ENGINE == "easyocr":
+            result = _easyocr_reader().readtext(image_path, detail=0, paragraph=True)
+            raw_text = " ".join(str(part) for part in result if str(part).strip())
+        elif OCR_ENGINE == "paddleocr":
+            result = _paddleocr_reader().ocr(image_path, cls=True)
+            text_parts = []
+            for page in result or []:
+                for row in page or []:
+                    if len(row) >= 2 and row[1]:
+                        text_parts.append(str(row[1][0]))
+            raw_text = " ".join(text_parts)
+        elif OCR_ENGINE == "tesseract":
+            completed = subprocess.run(
+                ["tesseract", image_path, "stdout"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            raw_text = completed.stdout if completed.returncode == 0 else ""
+            if completed.returncode != 0:
+                logger.warning("tesseract OCR failed: %s", completed.stderr.strip())
+        else:
+            logger.warning("Unsupported OCR_ENGINE=%s", OCR_ENGINE)
+            return None, None
+    except Exception as exc:
+        logger.warning("OCR failed with engine=%s: %s", OCR_ENGINE, exc)
+        return None, None
+
+    raw_text = raw_text.strip()
+    if not raw_text:
+        return None, None
+    return raw_text, _normalize_text(raw_text)
+
+
+def _product_metadata_values(
+    product: Product,
+    product_embedding: ProductEmbedding,
+) -> list[str]:
+    values = []
+    for attribute in (
+        "product_id",
+        "product_code",
+        "sku",
+        "name",
+        "brand",
+        "model",
+        "description",
+        "barcode",
+    ):
+        value = getattr(product, attribute, None)
+        if value:
+            values.append(str(value))
+
+    if product_embedding.view_label:
+        values.append(product_embedding.view_label)
+
+    return values
+
+
+def _category_metadata_values(product: Product) -> list[str]:
+    values = []
+    for attribute in ("category", "category_name", "product_type"):
+        value = getattr(product, attribute, None)
+        if value:
+            values.append(str(value))
+    return values
+
+
+def _text_match_score(
+    normalized_ocr_text: str | None,
+    product: Product,
+    product_embedding: ProductEmbedding,
+) -> float | None:
+    if not normalized_ocr_text:
+        return None
+
+    ocr_compact = _compact_text(normalized_ocr_text)
+    ocr_tokens = set(normalized_ocr_text.split())
+    best_score = 0.0
+
+    for metadata_value in _product_metadata_values(product, product_embedding):
+        metadata_normalized = _normalize_text(metadata_value)
+        metadata_compact = _compact_text(metadata_value)
+        metadata_tokens = set(metadata_normalized.split())
+        if not metadata_compact:
+            continue
+
+        if metadata_compact in ocr_compact or ocr_compact in metadata_compact:
+            best_score = max(best_score, 1.0)
+
+        if metadata_tokens:
+            overlap = len(ocr_tokens & metadata_tokens) / max(len(metadata_tokens), 1)
+            best_score = max(best_score, overlap)
+
+        fuzzy = SequenceMatcher(None, ocr_compact, metadata_compact).ratio()
+        best_score = max(best_score, fuzzy)
+
+    return round(min(best_score, 1.0), 4)
+
+
+def _category_match_score(
+    normalized_ocr_text: str | None,
+    product: Product,
+) -> float | None:
+    if not normalized_ocr_text:
+        return None
+
+    categories = _category_metadata_values(product)
+    if not categories:
+        return None
+
+    ocr_compact = _compact_text(normalized_ocr_text)
+    best_score = 0.0
+    for category in categories:
+        category_compact = _compact_text(category)
+        if not category_compact:
+            continue
+        if category_compact in ocr_compact:
+            best_score = max(best_score, 1.0)
+        else:
+            best_score = max(
+                best_score,
+                SequenceMatcher(None, ocr_compact, category_compact).ratio(),
+            )
+    return round(min(best_score, 1.0), 4)
+
+
+def _image_similarity_score(distance: float) -> float:
+    return round(max(0.0, min(1.0, 1.0 - float(distance))), 4)
+
+
+def _final_score(
+    image_similarity_score: float,
+    text_match_score: float | None,
+    category_match_score: float | None,
+) -> float:
+    weighted_scores = [(image_similarity_score, IMAGE_SIMILARITY_WEIGHT)]
+
+    if text_match_score is not None:
+        weighted_scores.append((text_match_score, TEXT_MATCH_WEIGHT))
+    if category_match_score is not None:
+        weighted_scores.append((category_match_score, CATEGORY_MATCH_WEIGHT))
+
+    total_weight = sum(weight for _, weight in weighted_scores)
+    if total_weight <= 0:
+        return image_similarity_score
+
+    return round(
+        sum(score * weight for score, weight in weighted_scores) / total_weight,
+        4,
+    )
+
+
+def _confidence_level(final_score: float | None) -> str:
+    if final_score is None:
+        return "UNKNOWN"
+    if final_score >= HIGH_CONFIDENCE_THRESHOLD:
+        return "HIGH"
+    if final_score >= MEDIUM_CONFIDENCE_THRESHOLD:
+        return "MEDIUM"
+    if final_score > 0:
+        return "LOW"
+    return "UNKNOWN"
+
+
+def _candidate_explanation(
+    *,
+    distance: float,
+    image_score: float,
+    text_score: float | None,
+    category_score: float | None,
+    final_score: float,
+    raw_ocr_text: str | None,
+) -> list[str]:
+    explanation = []
+    if distance <= SIMILARITY_RECOGNIZED_THRESHOLD:
+        explanation.append("Image similarity is high")
+    elif distance <= SIMILARITY_UNKNOWN_THRESHOLD:
+        explanation.append("Image similarity is plausible but needs confirmation")
+    else:
+        explanation.append("Image similarity is weak")
+
+    if raw_ocr_text:
+        if text_score is not None and text_score >= 0.8:
+            explanation.append("OCR text strongly matches product metadata")
+        elif text_score is not None and text_score >= 0.4:
+            explanation.append("OCR text partially matches product metadata")
+        else:
+            explanation.append("OCR text did not clearly match product metadata")
+    elif ENABLE_OCR:
+        explanation.append("OCR was enabled but no readable text was found")
+
+    if category_score is not None:
+        explanation.append(f"Category match score is {category_score:.2f}")
+
+    explanation.append(f"Final score is {final_score:.2f}")
+    return explanation
+
+
+def _ranked_candidate_responses(
+    results: list[tuple[Product, ProductEmbedding, float]],
+    *,
+    raw_ocr_text: str | None = None,
+    normalized_ocr_text: str | None = None,
+) -> list[CandidateResponse]:
+    candidates = []
+    for product, product_embedding, distance in results:
+        image_score = _image_similarity_score(distance)
+        text_score = _text_match_score(normalized_ocr_text, product, product_embedding)
+        category_score = _category_match_score(normalized_ocr_text, product)
+        final_score = (
+            _final_score(image_score, text_score, category_score)
+            if normalized_ocr_text
+            else image_score
+        )
+
+        candidates.append(
+            CandidateResponse(
+                product_id=product.product_id,
+                product_code=product.product_id,
+                product_name=product.name,
+                name=product.name,
+                inventory_count=product.inventory_count or 0,
+                distance=distance,
+                matched_embedding_id=product_embedding.id,
+                matched_view_label=product_embedding.view_label,
+                image_similarity_score=image_score,
+                text_match_score=text_score,
+                category_match_score=category_score,
+                final_score=final_score,
+                reference_image_path=product_embedding.image_path,
+                confidence_level=_confidence_level(final_score),
+                explanation=_candidate_explanation(
+                    distance=distance,
+                    image_score=image_score,
+                    text_score=text_score,
+                    category_score=category_score,
+                    final_score=final_score,
+                    raw_ocr_text=raw_ocr_text,
+                ),
+            )
+        )
+
+    if normalized_ocr_text:
+        candidates.sort(
+            key=lambda candidate: candidate.final_score
+            if candidate.final_score is not None
+            else -1.0,
+            reverse=True,
+        )
+
+    if len(candidates) >= 2:
+        score_gap = (candidates[0].final_score or 0.0) - (
+            candidates[1].final_score or 0.0
+        )
+        if score_gap < SIMILARITY_MARGIN_THRESHOLD:
+            candidates[0].explanation.append(
+                "Top 2 candidates are close; user confirmation recommended"
+            )
+
+    return candidates
+
+
 def _nearest_product_candidates(
     db: Session,
     query_vector: list[float],
@@ -816,13 +1210,28 @@ def _candidate_response(
     product_embedding: ProductEmbedding,
     distance: float,
 ) -> CandidateResponse:
+    image_score = _image_similarity_score(distance)
     return CandidateResponse(
         product_id=product.product_id,
+        product_code=product.product_id,
+        product_name=product.name,
         name=product.name,
         inventory_count=product.inventory_count or 0,
         distance=distance,
         matched_embedding_id=product_embedding.id,
         matched_view_label=product_embedding.view_label,
+        image_similarity_score=image_score,
+        final_score=image_score,
+        reference_image_path=product_embedding.image_path,
+        confidence_level=_confidence_level(image_score),
+        explanation=_candidate_explanation(
+            distance=distance,
+            image_score=image_score,
+            text_score=None,
+            category_score=None,
+            final_score=image_score,
+            raw_ocr_text=None,
+        ),
     )
 
 
@@ -970,6 +1379,7 @@ async def recognize(
     file: UploadFile = File(...),
     mode: str = Form("operation"),
     model_version: str | None = Form(None),
+    top_k: int = Form(TOP_K_CANDIDATES, ge=1, le=20),
     db: Session = Depends(get_db),
 ):
     _ensure_image(file)
@@ -1000,6 +1410,14 @@ async def recognize(
                 "top1_distance": None,
                 "top2_distance": None,
                 "distance_margin": None,
+                "raw_ocr_text": None,
+                "normalized_ocr_text": None,
+                "image_similarity_score": None,
+                "text_match_score": None,
+                "category_match_score": None,
+                "final_score": None,
+                "confidence_level": "UNKNOWN",
+                "explanation": [],
                 "candidates": [],
             }
 
@@ -1037,14 +1455,25 @@ async def recognize(
                     item.get("crop_area_ratio", 0.0),
                     "unknown",
                 )
-                append_review_response({**base_response, "status": "unknown"})
+                append_review_response(
+                    {
+                        **base_response,
+                        "status": "unknown",
+                        "explanation": ["Crop is too small or invalid for recognition"],
+                    }
+                )
                 continue
 
             results = _nearest_product_candidates(
                 db,
                 item["embedding"],
-                limit=RECOGNITION_CANDIDATE_LIMIT,
+                limit=top_k,
             )
+            raw_ocr_text, normalized_ocr_text = _extract_ocr_text(crop_path)
+            ocr_fields = {
+                "raw_ocr_text": raw_ocr_text,
+                "normalized_ocr_text": normalized_ocr_text,
+            }
 
             if not results:
                 logger.info(
@@ -1053,20 +1482,24 @@ async def recognize(
                     None,
                     "unknown",
                 )
-                append_review_response({**base_response, "status": "unknown"})
+                append_review_response(
+                    {
+                        **base_response,
+                        **ocr_fields,
+                        "status": "unknown",
+                        "explanation": ["No reference product embeddings were available"],
+                    }
+                )
                 continue
 
-            product, product_embedding, distance = results[0]
-            candidates = [
-                _candidate_response(
-                    candidate_product,
-                    candidate_embedding,
-                    candidate_distance,
-                )
-                for candidate_product, candidate_embedding, candidate_distance in results
-            ]
-            top1_distance = distance
-            top2_distance = results[1][2] if len(results) > 1 else None
+            candidates = _ranked_candidate_responses(
+                results,
+                raw_ocr_text=raw_ocr_text,
+                normalized_ocr_text=normalized_ocr_text,
+            )
+            selected_candidate = candidates[0]
+            top1_distance = selected_candidate.distance
+            top2_distance = candidates[1].distance if len(candidates) > 1 else None
             distance_margin = (
                 top2_distance - top1_distance
                 if top2_distance is not None
@@ -1074,12 +1507,19 @@ async def recognize(
             )
             match_fields = {
                 **base_response,
+                **ocr_fields,
                 "distance": top1_distance,
-                "matched_embedding_id": product_embedding.id,
-                "matched_view_label": product_embedding.view_label,
+                "matched_embedding_id": selected_candidate.matched_embedding_id,
+                "matched_view_label": selected_candidate.matched_view_label,
                 "top1_distance": top1_distance,
                 "top2_distance": top2_distance,
                 "distance_margin": distance_margin,
+                "image_similarity_score": selected_candidate.image_similarity_score,
+                "text_match_score": selected_candidate.text_match_score,
+                "category_match_score": selected_candidate.category_match_score,
+                "final_score": selected_candidate.final_score,
+                "confidence_level": selected_candidate.confidence_level or "UNKNOWN",
+                "explanation": selected_candidate.explanation,
                 "candidates": candidates,
             }
 
@@ -1103,11 +1543,11 @@ async def recognize(
                 append_review_response({**match_fields, "status": "unknown"})
                 continue
 
-            if distance > SIMILARITY_UNKNOWN_THRESHOLD:
+            if top1_distance > SIMILARITY_UNKNOWN_THRESHOLD:
                 logger.info(
                     "recognize item=%s best_distance=%.6f status=%s",
                     index,
-                    distance,
+                    top1_distance,
                     "unknown",
                 )
                 append_review_response({**match_fields, "status": "unknown"})
@@ -1123,27 +1563,27 @@ async def recognize(
                 append_review_response(
                     {
                         **match_fields,
-                        "product_id": product.product_id,
-                        "name": product.name,
-                        "inventory_count": product.inventory_count or 0,
+                        "product_id": selected_candidate.product_id,
+                        "name": selected_candidate.name,
+                        "inventory_count": selected_candidate.inventory_count,
                         "status": "uncertain",
                     }
                 )
                 continue
 
-            if distance > SIMILARITY_RECOGNIZED_THRESHOLD:
+            if top1_distance > SIMILARITY_RECOGNIZED_THRESHOLD:
                 logger.info(
                     "recognize item=%s best_distance=%.6f status=%s",
                     index,
-                    distance,
+                    top1_distance,
                     "uncertain",
                 )
                 append_review_response(
                     {
                         **match_fields,
-                        "product_id": product.product_id,
-                        "name": product.name,
-                        "inventory_count": product.inventory_count or 0,
+                        "product_id": selected_candidate.product_id,
+                        "name": selected_candidate.name,
+                        "inventory_count": selected_candidate.inventory_count,
                         "status": "uncertain",
                     }
                 )
@@ -1153,16 +1593,16 @@ async def recognize(
                 logger.info(
                     "recognize item=%s best_distance=%.6f margin=%.6f status=%s",
                     index,
-                    distance,
+                    top1_distance,
                     distance_margin,
                     "uncertain",
                 )
                 append_review_response(
                     {
                         **match_fields,
-                        "product_id": product.product_id,
-                        "name": product.name,
-                        "inventory_count": product.inventory_count or 0,
+                        "product_id": selected_candidate.product_id,
+                        "name": selected_candidate.name,
+                        "inventory_count": selected_candidate.inventory_count,
                         "status": "uncertain",
                     }
                 )
@@ -1171,15 +1611,15 @@ async def recognize(
             logger.info(
                 "recognize item=%s best_distance=%.6f status=%s",
                 index,
-                distance,
+                top1_distance,
                 "recognized",
             )
             append_review_response(
                 {
                     **match_fields,
-                    "product_id": product.product_id,
-                    "name": product.name,
-                    "inventory_count": product.inventory_count or 0,
+                    "product_id": selected_candidate.product_id,
+                    "name": selected_candidate.name,
+                    "inventory_count": selected_candidate.inventory_count,
                     "status": "recognized",
                 }
             )
@@ -1211,10 +1651,7 @@ async def recognize_candidates(
             raise HTTPException(status_code=404, detail="No reference products have embeddings")
 
         return RecognizeCandidatesResponse(
-            candidates=[
-                _candidate_response(product, product_embedding, distance)
-                for product, product_embedding, distance in results
-            ]
+            candidates=_ranked_candidate_responses(results)
         )
     finally:
         if os.path.exists(temp_path):
@@ -1410,6 +1847,13 @@ def update_detection_review(
                 review=review,
                 source=f"human_{payload.user_decision}",
             )
+
+    if review.session is not None:
+        save_feedback_event_metadata(
+            session=review.session,
+            review=review,
+            source=f"human_feedback_{payload.user_decision}",
+        )
 
     db.flush()
     _update_session_status(db, review.session)

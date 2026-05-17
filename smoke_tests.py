@@ -1,9 +1,16 @@
 from pathlib import Path
 
 from app.api import (
+    CandidateResponse,
+    ENABLE_OCR,
+    HIGH_CONFIDENCE_THRESHOLD,
+    IMAGE_SIMILARITY_WEIGHT,
     ManualDetectionRequest,
+    MEDIUM_CONFIDENCE_THRESHOLD,
     MultiRecognizeResponse,
     REVIEW_DECISIONS,
+    TEXT_MATCH_WEIGHT,
+    TOP_K_CANDIDATES,
     app,
     convert_box_to_yolo,
     convert_display_box_to_original,
@@ -163,9 +170,51 @@ def test_recognize_response_debug_fields_exist() -> None:
         "distance_margin",
         "session_id",
         "review_id",
+        "raw_ocr_text",
+        "normalized_ocr_text",
+        "image_similarity_score",
+        "text_match_score",
+        "category_match_score",
+        "final_score",
+        "confidence_level",
+        "explanation",
     }
     missing_fields = required_fields - set(fields)
     assert not missing_fields, f"Missing response fields: {sorted(missing_fields)}"
+
+
+def test_candidate_phase2_fields_exist() -> None:
+    if hasattr(CandidateResponse, "model_fields"):
+        fields = CandidateResponse.model_fields
+    else:
+        fields = CandidateResponse.__fields__
+    required_fields = {
+        "product_code",
+        "product_name",
+        "image_similarity_score",
+        "text_match_score",
+        "category_match_score",
+        "final_score",
+        "reference_image_path",
+        "confidence_level",
+        "explanation",
+    }
+    missing_fields = required_fields - set(fields)
+    assert not missing_fields, f"Missing candidate fields: {sorted(missing_fields)}"
+
+
+def test_phase2_config_defaults_are_safe() -> None:
+    assert TOP_K_CANDIDATES == 5
+    assert ENABLE_OCR is False
+    assert 0.0 <= IMAGE_SIMILARITY_WEIGHT <= 1.0
+    assert 0.0 <= TEXT_MATCH_WEIGHT <= 1.0
+    assert HIGH_CONFIDENCE_THRESHOLD >= MEDIUM_CONFIDENCE_THRESHOLD
+
+
+def test_recognize_route_accepts_top_k_form_field() -> None:
+    route = next(route for route in app.routes if route.path == "/api/v1/recognize")
+    body_param_names = {param.name for param in route.dependant.body_params}
+    assert "top_k" in body_param_names
 
 
 def test_review_session_response_image_size_fields_exist() -> None:
@@ -241,6 +290,9 @@ if __name__ == "__main__":
     test_detection_review_model_can_be_created()
     test_needs_review_decision_exists_but_is_not_exported_positive()
     test_recognize_response_debug_fields_exist()
+    test_candidate_phase2_fields_exist()
+    test_phase2_config_defaults_are_safe()
+    test_recognize_route_accepts_top_k_form_field()
     test_review_session_response_image_size_fields_exist()
     test_embedding_route_accepts_full_image_option()
     test_yolo_prediction_defaults_exist()

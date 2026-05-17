@@ -16,7 +16,7 @@ Self-hosted visual inventory proof of concept for registering products from imag
 - Streamlit frontend in `frontend/main.py`
 - Docker Compose starts `db`, `api`, and `frontend`
 
-The API stores many normalized 512-dimensional CLIP embeddings per product. Recognition detects product regions with YOLO, crops each region, embeds each crop, searches across all product reference embeddings with pgvector cosine distance, then maps the best embedding matches back to unique `product_id` results. Recognition is only a suggestion: the frontend shows bounding boxes for review, and inventory is changed only after explicit human confirmation.
+The API stores many normalized 512-dimensional CLIP embeddings per product. Recognition detects product regions with YOLO, crops each region, embeds each crop, searches across all product reference embeddings with pgvector cosine distance, then maps the best embedding matches back to unique `product_id` results. Phase 2 recognition returns Top-K product candidates for every crop, can optionally run OCR on the crop, computes text/category reranking scores when metadata is available, and records human feedback for later improvement. Recognition is only a suggestion: the frontend shows bounding boxes for review, and inventory is changed only after explicit human confirmation.
 
 Recognition responses include a small base64 JPEG crop preview for every detected box. These previews are debugging aids to verify whether YOLO cropped the actual product or a misleading fragment before trusting the CLIP match.
 
@@ -24,7 +24,7 @@ Recognition responses include a small base64 JPEG crop preview for every detecte
 
 The Streamlit app separates daily work from AI improvement:
 
-- `Nhận diện / Kiểm kho`: for warehouse scanning. It shows the uploaded image with bounding boxes, a simple product list, and user decisions for inventory confirmation. Technical fields stay hidden under `Technical Details`.
+- `Nhận diện / Kiểm kho`: for warehouse scanning. It shows the uploaded image with bounding boxes, a simple product list, Top-K candidate choices for each crop, confidence explanations, and user decisions for inventory confirmation. Technical fields stay hidden under `Technical Details`.
 - `Quản lý sản phẩm`: keeps the existing product creation and multi-image reference upload flow.
 - `Review & sửa lỗi AI`: for supervisors/admins reviewing AI behavior. It shows stored recognition sessions, crops, top-K candidates, detector confidence, distance metrics, matched embedding details, and training decisions.
 - `Vẽ box sản phẩm bị thiếu`: lets a reviewer draw one missing product box directly on the source image, preview the crop, and save it as a one-class YOLO `product` annotation.
@@ -130,12 +130,26 @@ Example response:
     "top1_distance": 0.08,
     "top2_distance": 0.19,
     "distance_margin": 0.11,
+    "raw_ocr_text": null,
+    "normalized_ocr_text": null,
+    "image_similarity_score": 0.92,
+    "text_match_score": null,
+    "final_score": 0.92,
+    "confidence_level": "HIGH",
+    "explanation": ["Image similarity is high", "Final score is 0.92"],
     "candidates": [
       {
         "product_id": "CUP-001",
+        "product_code": "CUP-001",
+        "product_name": "Test Cup",
         "name": "Test Cup",
         "inventory_count": 25,
         "distance": 0.08,
+        "image_similarity_score": 0.92,
+        "text_match_score": null,
+        "final_score": 0.92,
+        "confidence_level": "HIGH",
+        "reference_image_path": null,
         "matched_embedding_id": 12,
         "matched_view_label": "front"
       }
@@ -201,15 +215,23 @@ curl -F file=@product.jpg \
 ```
 
 Candidate responses are unique by product and include the best matched reference embedding:
+When OCR is enabled on `/api/v1/recognize`, the frontend sorts and explains candidates using image similarity, OCR text matching, and optional category metadata. `/api/v1/recognize/candidates` remains image-only because it receives a full image reference query.
 
 ```json
 {
   "candidates": [
     {
       "product_id": "CUP-001",
+      "product_code": "CUP-001",
+      "product_name": "Test Cup",
       "name": "Test Cup",
       "inventory_count": 25,
       "distance": 0.08,
+      "image_similarity_score": 0.92,
+      "text_match_score": null,
+      "final_score": 0.92,
+      "confidence_level": "HIGH",
+      "reference_image_path": null,
       "matched_embedding_id": 12,
       "matched_view_label": "front"
     }
@@ -274,13 +296,21 @@ API service variables in `docker-compose.yml`:
 - `SIMILARITY_RECOGNIZED_THRESHOLD`: maximum top-1 cosine distance for a direct `recognized` result, default `0.15`.
 - `SIMILARITY_UNKNOWN_THRESHOLD`: maximum top-1 cosine distance before a crop becomes `unknown`, default `0.22`.
 - `SIMILARITY_MARGIN_THRESHOLD`: minimum gap between top-1 and top-2 cosine distance before a result is considered safely recognized, default `0.03`. Smaller gaps become `uncertain`.
+- `TOP_K_CANDIDATES`: number of unique product candidates returned per detected crop, default `5`.
+- `ENABLE_OCR`: optional crop OCR switch, default `false`. When OCR fails or dependencies are missing, image recognition still works.
+- `OCR_ENGINE`: optional OCR backend name, default `easyocr`. Supported adapters are `easyocr`, `paddleocr`, and `tesseract` when installed in the runtime.
+- `IMAGE_SIMILARITY_WEIGHT`: reranking weight for CLIP similarity, default `0.70`.
+- `TEXT_MATCH_WEIGHT`: reranking weight for OCR-to-product metadata matching, default `0.25`.
+- `CATEGORY_MATCH_WEIGHT`: reranking weight for category metadata when available, default `0.05`.
+- `HIGH_CONFIDENCE_THRESHOLD`: minimum final score for `HIGH` confidence, default `0.85`.
+- `MEDIUM_CONFIDENCE_THRESHOLD`: minimum final score for `MEDIUM` confidence, default `0.70`.
 - `YOLO_CONFIDENCE_THRESHOLD`: YOLO prediction confidence threshold, default `0.25`.
 - `YOLO_IOU_THRESHOLD`: YOLO NMS IoU threshold, default `0.45`.
 - `YOLO_MAX_DETECTIONS`: maximum YOLO detections per image, default `20`.
 - `YOLO_MODEL_PATH`: YOLO model path, default `yolov8n.pt`.
 - `YOLO_CLASSES`: comma-separated YOLO class IDs to detect. Use an empty value for the generic PoC so YOLO is not restricted to a few COCO classes.
 - `CLIP_MODEL_NAME`: Hugging Face CLIP model name, default `openai/clip-vit-base-patch32`.
-- `RECOGNITION_CANDIDATE_LIMIT`: number of unique product candidates to include per detected box, default `3`.
+- `RECOGNITION_CANDIDATE_LIMIT`: backward-compatible alias for candidate count. Prefer `TOP_K_CANDIDATES`; Docker defaults both to `5`.
 - `REVIEW_STORAGE_DIR`: directory for recognition session images and detection crops. Docker sets this to `/data/reviews`; local runs default to `review_data`.
 - `YOLO_DATASET_DIR`: directory for saved human annotations and YOLO labels. Docker sets this to `/code/data/yolo_dataset`, mounted from local `./data`.
 - `REGISTRATION_USE_DETECTOR_CROP`: when `false`, registration embeds the full uploaded reference image. Set to `true` only when the detector crop is trusted.
@@ -290,6 +320,14 @@ API service variables in `docker-compose.yml`:
 - `LOG_LEVEL`: Python logging level for the API, default `INFO`.
 
 For this generic PoC, keep `YOLO_CLASSES=""`. In production, train or provide a one-class YOLO model for `product` detection, then calibrate `YOLO_CLASSES` and detection thresholds around real warehouse images.
+
+## Recognition Roadmap
+
+- Phase 1: YOLO finds product-like regions, CLIP embeds each crop, and pgvector returns nearest product reference embeddings.
+- Phase 2: every crop returns Top-K unique product candidates, optional OCR text, image/text/category scores, a final confidence level, and a short explanation. Human choices are logged through the review workflow so mistakes can be audited later.
+- Phase 3 later: fine-tune or replace the embedding model using reviewed data. This repository does not fine-tune models yet.
+
+OCR is disabled by default because offline OCR packages add runtime size and model downloads. Enable it only after installing the selected OCR engine in the API image or local environment. Product metadata matching currently uses available fields such as `product_id`, `name`, and reference `view_label`; future metadata such as brand, model, description, barcode, or category will be used automatically if those attributes are added.
 
 ## Custom Product Detector
 
@@ -346,6 +384,8 @@ The Streamlit recognition screen draws bounding boxes over the uploaded image an
 AI recognition never updates stock by itself. The frontend sends reviewed results to `POST /api/v1/inventory/confirm` only when the user clicks `Confirm inventory result`. Rejected detections are returned in the confirmation response and can be collected later as useful examples for improving detector or embedding quality.
 
 When an Operation Mode user selects `Gửi sang Training Review`, the detection is saved as `needs_review`. It is excluded from inventory updates and keeps the session visible for Training Mode follow-up.
+
+Each accept/correct/reject/unknown decision is also written as feedback metadata. The record includes session/review IDs, crop path, predicted and selected product IDs, Top-K candidates, image similarity scores, OCR text when available, text match scores, final scores, and timestamp. This is audit data only; it does not automatically retrain the model or update inventory.
 
 ## Progressive Learning Export
 
