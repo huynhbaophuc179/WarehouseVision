@@ -9,9 +9,17 @@ from streamlit_drawable_canvas import st_canvas
 
 
 def patch_drawable_canvas_image_to_url():
-    """Restore the private Streamlit helper expected by streamlit-drawable-canvas."""
+    """Restore the private Streamlit helper expected by streamlit-drawable-canvas.
+
+    The drawable-canvas iframe prefixes Streamlit's origin to this value, so it
+    must be a Streamlit media path like /media/... rather than a data: URL.
+    """
     try:
         from streamlit.elements import image as st_image
+        from streamlit.elements.lib.image_utils import (
+            image_to_url as modern_image_to_url,
+        )
+        from streamlit.elements.lib.layout_utils import create_layout_config
     except Exception:
         return
 
@@ -26,20 +34,18 @@ def patch_drawable_canvas_image_to_url():
         output_format="PNG",
         image_id=None,
     ):
-        del width, clamp, image_id
-        if channels:
-            image = image.convert(channels)
-
-        buffer = BytesIO()
-        image_format = output_format or "PNG"
-        image.save(buffer, format=image_format)
-        mime_format = (
-            "jpeg"
-            if image_format.lower() in {"jpg", "jpeg"}
-            else image_format.lower()
+        layout_config = create_layout_config(
+            width=width or "content",
+            allow_content_width=True,
         )
-        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-        return f"data:image/{mime_format};base64,{encoded}"
+        return modern_image_to_url(
+            image,
+            layout_config,
+            clamp,
+            channels,
+            output_format,
+            image_id or "drawable-canvas-bg",
+        )
 
     st_image.image_to_url = image_to_url
 
