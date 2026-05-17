@@ -1085,7 +1085,8 @@ if choice == PAGE_OPERATION:
                 )
                 if item.get("explanation"):
                     with st.expander("Vì sao AI đề xuất kết quả này", expanded=False):
-                        for explanation in item["explanation"]:
+                        explanations = item.get("confidence_explanation") or item["explanation"]
+                        for explanation in explanations:
                             st.write(f"- {explanation}")
                         if item.get("raw_ocr_text"):
                             st.caption(f"OCR: {item['raw_ocr_text']}")
@@ -1117,6 +1118,9 @@ if choice == PAGE_OPERATION:
                                 "Điểm chữ": format_score(
                                     candidate.get("text_match_score")
                                 ),
+                                "Dùng OCR": "Có"
+                                if candidate.get("text_match_used_in_rerank")
+                                else "Không",
                                 "Điểm cuối": format_score(candidate.get("final_score")),
                                 "Độ tin cậy": confidence_label(
                                     candidate.get("confidence_level")
@@ -1165,15 +1169,22 @@ if choice == PAGE_OPERATION:
                             "matched_view_label": item.get("matched_view_label"),
                             "raw_ocr_text": item.get("raw_ocr_text"),
                             "normalized_ocr_text": item.get("normalized_ocr_text"),
+                            "ocr_text_found": item.get("ocr_text_found"),
                             "image_similarity_score": format_score(
                                 item.get("image_similarity_score")
                             ),
                             "text_match_score": format_score(item.get("text_match_score")),
+                            "text_match_used_in_rerank": item.get(
+                                "text_match_used_in_rerank"
+                            ),
                             "category_match_score": format_score(
                                 item.get("category_match_score")
                             ),
                             "final_score": format_score(item.get("final_score")),
                             "confidence_level": item.get("confidence_level"),
+                            "confidence_explanation": item.get(
+                                "confidence_explanation"
+                            ),
                         }
                     )
                     if candidates:
@@ -1189,6 +1200,9 @@ if choice == PAGE_OPERATION:
                                     ),
                                     "text_score": format_score(
                                         candidate.get("text_match_score")
+                                    ),
+                                    "text_used": candidate.get(
+                                        "text_match_used_in_rerank"
                                     ),
                                     "final_score": format_score(
                                         candidate.get("final_score")

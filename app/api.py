@@ -64,6 +64,11 @@ OCR_ENGINE = os.getenv("OCR_ENGINE", "easyocr").strip().lower()
 IMAGE_SIMILARITY_WEIGHT = float(os.getenv("IMAGE_SIMILARITY_WEIGHT", "0.70"))
 TEXT_MATCH_WEIGHT = float(os.getenv("TEXT_MATCH_WEIGHT", "0.25"))
 CATEGORY_MATCH_WEIGHT = float(os.getenv("CATEGORY_MATCH_WEIGHT", "0.05"))
+OCR_MIN_MEANINGFUL_CHARS = int(os.getenv("OCR_MIN_MEANINGFUL_CHARS", "3"))
+TEXT_MATCH_RERANK_THRESHOLD = float(os.getenv("TEXT_MATCH_RERANK_THRESHOLD", "0.60"))
+TEXT_MATCH_BONUS_MAX = float(os.getenv("TEXT_MATCH_BONUS_MAX", "0.15"))
+TEXT_CONFLICT_THRESHOLD = float(os.getenv("TEXT_CONFLICT_THRESHOLD", "0.15"))
+CATEGORY_MATCH_BONUS_MAX = float(os.getenv("CATEGORY_MATCH_BONUS_MAX", "0.03"))
 HIGH_CONFIDENCE_THRESHOLD = float(os.getenv("HIGH_CONFIDENCE_THRESHOLD", "0.85"))
 MEDIUM_CONFIDENCE_THRESHOLD = float(os.getenv("MEDIUM_CONFIDENCE_THRESHOLD", "0.70"))
 MODEL_VERSION = os.getenv("MODEL_VERSION", os.getenv("YOLO_MODEL_PATH", "yolov8n.pt"))
@@ -128,9 +133,12 @@ class CandidateResponse(RecognizeResponse):
     image_similarity_score: float | None = None
     text_match_score: float | None = None
     category_match_score: float | None = None
+    ocr_text_found: bool = False
+    text_match_used_in_rerank: bool = False
     final_score: float | None = None
     reference_image_path: str | None = None
     confidence_level: str | None = None
+    confidence_explanation: list[str] = Field(default_factory=list)
     explanation: list[str] = Field(default_factory=list)
 
 
@@ -165,8 +173,11 @@ class MultiRecognizeResponse(BaseModel):
     image_similarity_score: float | None = None
     text_match_score: float | None = None
     category_match_score: float | None = None
+    ocr_text_found: bool = False
+    text_match_used_in_rerank: bool = False
     final_score: float | None = None
     confidence_level: str = "UNKNOWN"
+    confidence_explanation: list[str] = Field(default_factory=list)
     explanation: list[str] = Field(default_factory=list)
     candidates: list[CandidateResponse] = Field(default_factory=list)
 
@@ -570,10 +581,12 @@ def save_feedback_event_metadata(
         ],
         "raw_ocr_text": raw_ocr_text,
         "normalized_ocr_text": normalized_ocr_text,
+        "ocr_text_found": _ocr_text_is_meaningful(normalized_ocr_text),
         "text_match_scores": [
             {
                 "product_id": candidate.get("product_id"),
                 "score": candidate.get("text_match_score"),
+                "used_in_rerank": candidate.get("text_match_used_in_rerank"),
             }
             for candidate in top_k_candidates
         ],
@@ -903,6 +916,10 @@ def _compact_text(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", "", _normalize_text(value))
 
 
+def _ocr_text_is_meaningful(normalized_ocr_text: str | None) -> bool:
+    return len(_compact_text(normalized_ocr_text)) >= OCR_MIN_MEANINGFUL_CHARS
+
+
 def _extract_ocr_text(image_path: str | None) -> tuple[str | None, str | None]:
     if not ENABLE_OCR or not image_path or not os.path.exists(image_path):
         return None, None
@@ -1044,31 +1061,42 @@ def _final_score(
     image_similarity_score: float,
     text_match_score: float | None,
     category_match_score: float | None,
-) -> float:
-    weighted_scores = [(image_similarity_score, IMAGE_SIMILARITY_WEIGHT)]
+    *,
+    ocr_text_found: bool,
+) -> tuple[float, bool]:
+    final_score = image_similarity_score
+    text_match_used = False
 
-    if text_match_score is not None:
-        weighted_scores.append((text_match_score, TEXT_MATCH_WEIGHT))
-    if category_match_score is not None:
-        weighted_scores.append((category_match_score, CATEGORY_MATCH_WEIGHT))
+    if ocr_text_found and text_match_score is not None:
+        if text_match_score >= TEXT_MATCH_RERANK_THRESHOLD:
+            final_score += TEXT_MATCH_BONUS_MAX * text_match_score
+            text_match_used = True
 
-    total_weight = sum(weight for _, weight in weighted_scores)
-    if total_weight <= 0:
-        return image_similarity_score
+    if category_match_score is not None and category_match_score >= TEXT_MATCH_RERANK_THRESHOLD:
+        final_score += CATEGORY_MATCH_BONUS_MAX * category_match_score
 
-    return round(
-        sum(score * weight for score, weight in weighted_scores) / total_weight,
-        4,
+    return round(min(1.0, final_score), 4), text_match_used
+
+
+def _has_text_conflict(
+    *,
+    ocr_text_found: bool,
+    text_match_score: float | None,
+) -> bool:
+    return (
+        ocr_text_found
+        and text_match_score is not None
+        and text_match_score <= TEXT_CONFLICT_THRESHOLD
     )
 
 
-def _confidence_level(final_score: float | None) -> str:
+def _confidence_level(final_score: float | None, *, suspicious: bool = False) -> str:
     if final_score is None:
         return "UNKNOWN"
     if final_score >= HIGH_CONFIDENCE_THRESHOLD:
-        return "HIGH"
+        return "MEDIUM" if suspicious else "HIGH"
     if final_score >= MEDIUM_CONFIDENCE_THRESHOLD:
-        return "MEDIUM"
+        return "LOW" if suspicious else "MEDIUM"
     if final_score > 0:
         return "LOW"
     return "UNKNOWN"
@@ -1082,6 +1110,9 @@ def _candidate_explanation(
     category_score: float | None,
     final_score: float,
     raw_ocr_text: str | None,
+    ocr_text_found: bool,
+    text_match_used: bool,
+    suspicious: bool,
 ) -> list[str]:
     explanation = []
     if distance <= SIMILARITY_RECOGNIZED_THRESHOLD:
@@ -1091,15 +1122,24 @@ def _candidate_explanation(
     else:
         explanation.append("Image similarity is weak")
 
-    if raw_ocr_text:
+    if ocr_text_found:
         if text_score is not None and text_score >= 0.8:
             explanation.append("OCR text strongly matches product metadata")
         elif text_score is not None and text_score >= 0.4:
             explanation.append("OCR text partially matches product metadata")
+        elif suspicious:
+            explanation.append(
+                "OCR text conflicts with this candidate; user confirmation recommended"
+            )
         else:
-            explanation.append("OCR text did not clearly match product metadata")
+            explanation.append("OCR text was found but not used for reranking")
     elif ENABLE_OCR:
-        explanation.append("OCR was enabled but no readable text was found")
+        explanation.append("OCR did not find meaningful text; image similarity was used")
+    else:
+        explanation.append("OCR is disabled; final score uses image similarity")
+
+    if text_match_used:
+        explanation.append("OCR text match added a positive reranking bonus")
 
     if category_score is not None:
         explanation.append(f"Category match score is {category_score:.2f}")
@@ -1115,14 +1155,40 @@ def _ranked_candidate_responses(
     normalized_ocr_text: str | None = None,
 ) -> list[CandidateResponse]:
     candidates = []
+    ocr_text_found = _ocr_text_is_meaningful(normalized_ocr_text)
     for product, product_embedding, distance in results:
         image_score = _image_similarity_score(distance)
-        text_score = _text_match_score(normalized_ocr_text, product, product_embedding)
-        category_score = _category_match_score(normalized_ocr_text, product)
-        final_score = (
-            _final_score(image_score, text_score, category_score)
-            if normalized_ocr_text
-            else image_score
+        text_score = (
+            _text_match_score(normalized_ocr_text, product, product_embedding)
+            if ocr_text_found
+            else None
+        )
+        category_score = (
+            _category_match_score(normalized_ocr_text, product)
+            if ocr_text_found
+            else None
+        )
+        final_score, text_match_used = _final_score(
+            image_score,
+            text_score,
+            category_score,
+            ocr_text_found=ocr_text_found,
+        )
+        suspicious = _has_text_conflict(
+            ocr_text_found=ocr_text_found,
+            text_match_score=text_score,
+        )
+        confidence_level = _confidence_level(final_score, suspicious=suspicious)
+        confidence_explanation = _candidate_explanation(
+            distance=distance,
+            image_score=image_score,
+            text_score=text_score,
+            category_score=category_score,
+            final_score=final_score,
+            raw_ocr_text=raw_ocr_text,
+            ocr_text_found=ocr_text_found,
+            text_match_used=text_match_used,
+            suspicious=suspicious,
         )
 
         candidates.append(
@@ -1138,21 +1204,17 @@ def _ranked_candidate_responses(
                 image_similarity_score=image_score,
                 text_match_score=text_score,
                 category_match_score=category_score,
+                ocr_text_found=ocr_text_found,
+                text_match_used_in_rerank=text_match_used,
                 final_score=final_score,
                 reference_image_path=product_embedding.image_path,
-                confidence_level=_confidence_level(final_score),
-                explanation=_candidate_explanation(
-                    distance=distance,
-                    image_score=image_score,
-                    text_score=text_score,
-                    category_score=category_score,
-                    final_score=final_score,
-                    raw_ocr_text=raw_ocr_text,
-                ),
+                confidence_level=confidence_level,
+                confidence_explanation=confidence_explanation,
+                explanation=confidence_explanation,
             )
         )
 
-    if normalized_ocr_text:
+    if any(candidate.text_match_used_in_rerank for candidate in candidates):
         candidates.sort(
             key=lambda candidate: candidate.final_score
             if candidate.final_score is not None
@@ -1165,9 +1227,10 @@ def _ranked_candidate_responses(
             candidates[1].final_score or 0.0
         )
         if score_gap < SIMILARITY_MARGIN_THRESHOLD:
-            candidates[0].explanation.append(
+            candidates[0].confidence_explanation.append(
                 "Top 2 candidates are close; user confirmation recommended"
             )
+            candidates[0].explanation = candidates[0].confidence_explanation
 
     return candidates
 
@@ -1211,6 +1274,17 @@ def _candidate_response(
     distance: float,
 ) -> CandidateResponse:
     image_score = _image_similarity_score(distance)
+    confidence_explanation = _candidate_explanation(
+        distance=distance,
+        image_score=image_score,
+        text_score=None,
+        category_score=None,
+        final_score=image_score,
+        raw_ocr_text=None,
+        ocr_text_found=False,
+        text_match_used=False,
+        suspicious=False,
+    )
     return CandidateResponse(
         product_id=product.product_id,
         product_code=product.product_id,
@@ -1221,17 +1295,13 @@ def _candidate_response(
         matched_embedding_id=product_embedding.id,
         matched_view_label=product_embedding.view_label,
         image_similarity_score=image_score,
+        ocr_text_found=False,
+        text_match_used_in_rerank=False,
         final_score=image_score,
         reference_image_path=product_embedding.image_path,
         confidence_level=_confidence_level(image_score),
-        explanation=_candidate_explanation(
-            distance=distance,
-            image_score=image_score,
-            text_score=None,
-            category_score=None,
-            final_score=image_score,
-            raw_ocr_text=None,
-        ),
+        confidence_explanation=confidence_explanation,
+        explanation=confidence_explanation,
     )
 
 
@@ -1415,8 +1485,11 @@ async def recognize(
                 "image_similarity_score": None,
                 "text_match_score": None,
                 "category_match_score": None,
+                "ocr_text_found": False,
+                "text_match_used_in_rerank": False,
                 "final_score": None,
                 "confidence_level": "UNKNOWN",
+                "confidence_explanation": [],
                 "explanation": [],
                 "candidates": [],
             }
@@ -1470,9 +1543,11 @@ async def recognize(
                 limit=top_k,
             )
             raw_ocr_text, normalized_ocr_text = _extract_ocr_text(crop_path)
+            ocr_text_found = _ocr_text_is_meaningful(normalized_ocr_text)
             ocr_fields = {
                 "raw_ocr_text": raw_ocr_text,
                 "normalized_ocr_text": normalized_ocr_text,
+                "ocr_text_found": ocr_text_found,
             }
 
             if not results:
@@ -1517,8 +1592,13 @@ async def recognize(
                 "image_similarity_score": selected_candidate.image_similarity_score,
                 "text_match_score": selected_candidate.text_match_score,
                 "category_match_score": selected_candidate.category_match_score,
+                "ocr_text_found": selected_candidate.ocr_text_found,
+                "text_match_used_in_rerank": (
+                    selected_candidate.text_match_used_in_rerank
+                ),
                 "final_score": selected_candidate.final_score,
                 "confidence_level": selected_candidate.confidence_level or "UNKNOWN",
+                "confidence_explanation": selected_candidate.confidence_explanation,
                 "explanation": selected_candidate.explanation,
                 "candidates": candidates,
             }

@@ -11,6 +11,8 @@ from app.api import (
     REVIEW_DECISIONS,
     TEXT_MATCH_WEIGHT,
     TOP_K_CANDIDATES,
+    _final_score,
+    _has_text_conflict,
     app,
     convert_box_to_yolo,
     convert_display_box_to_original,
@@ -175,8 +177,11 @@ def test_recognize_response_debug_fields_exist() -> None:
         "image_similarity_score",
         "text_match_score",
         "category_match_score",
+        "ocr_text_found",
+        "text_match_used_in_rerank",
         "final_score",
         "confidence_level",
+        "confidence_explanation",
         "explanation",
     }
     missing_fields = required_fields - set(fields)
@@ -194,9 +199,12 @@ def test_candidate_phase2_fields_exist() -> None:
         "image_similarity_score",
         "text_match_score",
         "category_match_score",
+        "ocr_text_found",
+        "text_match_used_in_rerank",
         "final_score",
         "reference_image_path",
         "confidence_level",
+        "confidence_explanation",
         "explanation",
     }
     missing_fields = required_fields - set(fields)
@@ -209,6 +217,35 @@ def test_phase2_config_defaults_are_safe() -> None:
     assert 0.0 <= IMAGE_SIMILARITY_WEIGHT <= 1.0
     assert 0.0 <= TEXT_MATCH_WEIGHT <= 1.0
     assert HIGH_CONFIDENCE_THRESHOLD >= MEDIUM_CONFIDENCE_THRESHOLD
+
+
+def test_ocr_positive_signal_scoring() -> None:
+    no_ocr_score, no_ocr_used = _final_score(
+        0.80,
+        None,
+        None,
+        ocr_text_found=False,
+    )
+    weak_ocr_score, weak_ocr_used = _final_score(
+        0.80,
+        0.10,
+        None,
+        ocr_text_found=True,
+    )
+    strong_ocr_score, strong_ocr_used = _final_score(
+        0.80,
+        0.80,
+        None,
+        ocr_text_found=True,
+    )
+
+    assert no_ocr_score == 0.80
+    assert no_ocr_used is False
+    assert weak_ocr_score == 0.80
+    assert weak_ocr_used is False
+    assert strong_ocr_score > 0.80
+    assert strong_ocr_used is True
+    assert _has_text_conflict(ocr_text_found=True, text_match_score=0.05) is True
 
 
 def test_recognize_route_accepts_top_k_form_field() -> None:
@@ -292,6 +329,7 @@ if __name__ == "__main__":
     test_recognize_response_debug_fields_exist()
     test_candidate_phase2_fields_exist()
     test_phase2_config_defaults_are_safe()
+    test_ocr_positive_signal_scoring()
     test_recognize_route_accepts_top_k_form_field()
     test_review_session_response_image_size_fields_exist()
     test_embedding_route_accepts_full_image_option()

@@ -132,10 +132,13 @@ Example response:
     "distance_margin": 0.11,
     "raw_ocr_text": null,
     "normalized_ocr_text": null,
+    "ocr_text_found": false,
     "image_similarity_score": 0.92,
     "text_match_score": null,
+    "text_match_used_in_rerank": false,
     "final_score": 0.92,
     "confidence_level": "HIGH",
+    "confidence_explanation": ["Image similarity is high", "Final score is 0.92"],
     "explanation": ["Image similarity is high", "Final score is 0.92"],
     "candidates": [
       {
@@ -147,8 +150,11 @@ Example response:
         "distance": 0.08,
         "image_similarity_score": 0.92,
         "text_match_score": null,
+        "ocr_text_found": false,
+        "text_match_used_in_rerank": false,
         "final_score": 0.92,
         "confidence_level": "HIGH",
+        "confidence_explanation": ["Image similarity is high", "Final score is 0.92"],
         "reference_image_path": null,
         "matched_embedding_id": 12,
         "matched_view_label": "front"
@@ -229,6 +235,8 @@ When OCR is enabled on `/api/v1/recognize`, the frontend sorts and explains cand
       "distance": 0.08,
       "image_similarity_score": 0.92,
       "text_match_score": null,
+      "ocr_text_found": false,
+      "text_match_used_in_rerank": false,
       "final_score": 0.92,
       "confidence_level": "HIGH",
       "reference_image_path": null,
@@ -299,9 +307,14 @@ API service variables in `docker-compose.yml`:
 - `TOP_K_CANDIDATES`: number of unique product candidates returned per detected crop, default `5`.
 - `ENABLE_OCR`: optional crop OCR switch, default `false`. When OCR fails or dependencies are missing, image recognition still works.
 - `OCR_ENGINE`: optional OCR backend name, default `easyocr`. Supported adapters are `easyocr`, `paddleocr`, and `tesseract` when installed in the runtime.
-- `IMAGE_SIMILARITY_WEIGHT`: reranking weight for CLIP similarity, default `0.70`.
-- `TEXT_MATCH_WEIGHT`: reranking weight for OCR-to-product metadata matching, default `0.25`.
-- `CATEGORY_MATCH_WEIGHT`: reranking weight for category metadata when available, default `0.05`.
+- `IMAGE_SIMILARITY_WEIGHT`: retained for configuration compatibility; image similarity is always the baseline score.
+- `TEXT_MATCH_WEIGHT`: retained for configuration compatibility. OCR/text matching is treated as an optional positive signal, not a mandatory penalty.
+- `CATEGORY_MATCH_WEIGHT`: retained for configuration compatibility.
+- `OCR_MIN_MEANINGFUL_CHARS`: minimum normalized OCR characters before text matching is considered meaningful, default `3`.
+- `TEXT_MATCH_RERANK_THRESHOLD`: minimum text match score before OCR can add a reranking bonus, default `0.60`.
+- `TEXT_MATCH_BONUS_MAX`: maximum positive final-score bonus from OCR text matching, default `0.15`.
+- `TEXT_CONFLICT_THRESHOLD`: text match score at or below this value marks a candidate as suspicious, default `0.15`.
+- `CATEGORY_MATCH_BONUS_MAX`: maximum positive final-score bonus from category metadata, default `0.03`.
 - `HIGH_CONFIDENCE_THRESHOLD`: minimum final score for `HIGH` confidence, default `0.85`.
 - `MEDIUM_CONFIDENCE_THRESHOLD`: minimum final score for `MEDIUM` confidence, default `0.70`.
 - `YOLO_CONFIDENCE_THRESHOLD`: YOLO prediction confidence threshold, default `0.25`.
@@ -328,6 +341,8 @@ For this generic PoC, keep `YOLO_CLASSES=""`. In production, train or provide a 
 - Phase 3 later: fine-tune or replace the embedding model using reviewed data. This repository does not fine-tune models yet.
 
 OCR is disabled by default because offline OCR packages add runtime size and model downloads. Enable it only after installing the selected OCR engine in the API image or local environment. Product metadata matching currently uses available fields such as `product_id`, `name`, and reference `view_label`; future metadata such as brand, model, description, barcode, or category will be used automatically if those attributes are added.
+
+OCR is intentionally a positive signal only. If OCR is disabled, fails, or returns no meaningful text, `final_score` falls back to `image_similarity_score`. If OCR finds text that matches product metadata, it can add a small configurable bonus and set `text_match_used_in_rerank=true`. If OCR text strongly conflicts with a candidate, the candidate is marked in `confidence_explanation` and its confidence level can be capped, but the image score is not aggressively penalized until real warehouse data justifies stricter rules.
 
 ## Custom Product Detector
 
