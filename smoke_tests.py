@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from app.api import (
+    ManualDetectionRequest,
     MultiRecognizeResponse,
     REVIEW_DECISIONS,
     app,
@@ -29,6 +30,7 @@ def test_custom_box_canvas_component_exists() -> None:
     with component_path.open(encoding="utf-8") as component:
         content = component.read()
     assert "Streamlit.setComponentValue" in content
+    assert "selection_id" in content
     assert "displayed_box" in content
     assert "image_mime_type" in content
     assert "existing_boxes" in content
@@ -61,6 +63,33 @@ def test_required_routes_exist() -> None:
 
     missing_paths = required_paths - route_paths
     assert not missing_paths, f"Missing required routes: {sorted(missing_paths)}"
+
+
+def test_product_list_route_exists() -> None:
+    matching_routes = [
+        route
+        for route in app.routes
+        if route.path == "/api/v1/products" and "GET" in getattr(route, "methods", set())
+    ]
+    assert matching_routes, "Missing GET /api/v1/products route"
+
+
+def test_manual_detection_accepts_external_product_id() -> None:
+    if hasattr(ManualDetectionRequest, "model_fields"):
+        fields = ManualDetectionRequest.model_fields
+    else:
+        fields = ManualDetectionRequest.__fields__
+    assert "external_product_id" in fields
+
+
+def test_missing_box_ui_hides_yolo_copy() -> None:
+    main_path = Path("frontend/main.py")
+    if not main_path.exists():
+        return
+
+    content = main_path.read_text(encoding="utf-8")
+    assert "YOLO label" not in content
+    assert "YOLO training data" not in content
 
 
 def test_product_embedding_model_exists() -> None:
@@ -200,6 +229,9 @@ if __name__ == "__main__":
     test_custom_box_canvas_component_exists()
     test_drawable_canvas_dependency_removed()
     test_required_routes_exist()
+    test_product_list_route_exists()
+    test_manual_detection_accepts_external_product_id()
+    test_missing_box_ui_hides_yolo_copy()
     test_product_embedding_model_exists()
     test_product_embedding_dimension()
     test_product_embedding_review_metadata_exists()

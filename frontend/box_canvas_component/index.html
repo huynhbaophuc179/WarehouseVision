@@ -74,11 +74,11 @@
       <div class="legend">
         <span class="legend-item">
           <span class="legend-swatch existing-swatch"></span>
-          Existing AI detections
+          Box AI đã nhận diện
         </span>
         <span class="legend-item">
           <span class="legend-swatch missing-swatch"></span>
-          User-added missing box
+          Box người dùng thêm
         </span>
       </div>
     </div>
@@ -131,6 +131,7 @@
       let startPoint = null;
       let currentBox = null;
       let existingBoxes = [];
+      let selectionCounter = 0;
 
       function safeMimeType(value) {
         const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -218,7 +219,9 @@
 
       function emitBox(box) {
         const normalized = normalizeBox(box);
+        selectionCounter += 1;
         Streamlit.setComponentValue({
+          selection_id: `${Date.now()}-${selectionCounter}`,
           displayed_box: normalized,
           canvas_box: normalized,
           display_size: [canvas.width, canvas.height],

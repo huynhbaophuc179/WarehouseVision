@@ -172,6 +172,7 @@ class DetectionReviewUpdateRequest(BaseModel):
 class ManualDetectionRequest(BaseModel):
     corrected_box: list[float]
     confirmed_product_id: str | None = None
+    external_product_id: str | None = None
     user_decision: str = "manually_added"
     displayed_box: list[float] | None = None
     display_size: list[int] | None = None
@@ -352,6 +353,7 @@ def save_yolo_annotation(
     review: DetectionReview,
     box: list[float],
     product: Product | None = None,
+    external_product_id: str | None = None,
     displayed_box: list[float] | None = None,
     display_size: list[int] | None = None,
     source: str = "human_missing_box",
@@ -402,6 +404,7 @@ def save_yolo_annotation(
         "saved_label_path": str(label_path),
         "saved_yolo_label_path": str(label_path),
         "product_id": product.product_id if product is not None else None,
+        "external_product_id": external_product_id,
         "product_name": product.name if product is not None else None,
         "corrected_box": clamped_box,
         "box_original_pixels": {
@@ -444,6 +447,7 @@ def save_yolo_annotation(
         "y2": clamped_box[3],
         "label": "product",
         "product_id": product.product_id if product is not None else None,
+        "external_product_id": external_product_id,
         "source": source,
         "image_path": str(image_path),
         "label_path": str(label_path),
@@ -825,6 +829,30 @@ def _candidate_response(
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+
+@app.get("/api/v1/products", response_model=list[ProductResponse])
+def list_products(
+    search: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    query = db.query(Product)
+    if search:
+        pattern = f"%{search.strip()}%"
+        query = query.filter(
+            (Product.product_id.ilike(pattern)) | (Product.name.ilike(pattern))
+        )
+
+    products = query.order_by(Product.product_id).limit(limit).all()
+    return [
+        ProductResponse(
+            product_id=product.product_id,
+            name=product.name,
+            inventory_count=product.inventory_count or 0,
+        )
+        for product in products
+    ]
 
 
 @app.post("/api/v1/products", response_model=ProductResponse, status_code=201)
@@ -1463,6 +1491,7 @@ def add_manual_detection(
         review=review,
         box=corrected_box,
         product=yolo_product,
+        external_product_id=payload.external_product_id,
         displayed_box=payload.displayed_box,
         display_size=payload.display_size,
         source=payload.source or "human_missing_box",

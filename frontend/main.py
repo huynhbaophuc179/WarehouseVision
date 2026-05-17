@@ -27,7 +27,7 @@ PAGE_OPERATION = "Nhận diện / Kiểm kho"
 PAGE_PRODUCTS = "Quản lý sản phẩm"
 PAGE_TRAINING = "Review & sửa lỗi AI"
 PAGE_DRAW_BOX = "Vẽ box sản phẩm bị thiếu"
-PAGE_DATASET = "Dataset YOLO"
+PAGE_DATASET = "Dataset AI nhận diện"
 PAGE_SETTINGS = "Cài đặt"
 
 st.sidebar.title("WarehouseVision")
@@ -66,6 +66,15 @@ def upload_reference_image(product_id, uploaded_file, view_label, use_full_image
         data=data,
         timeout=120,
     )
+
+
+def fetch_products(search=None, limit=100):
+    params = {"limit": limit}
+    if search:
+        params["search"] = search
+    response = requests.get(f"{API_URL}/products", params=params, timeout=30)
+    response.raise_for_status()
+    return response.json()
 
 
 def build_batch_label(prefix, index):
@@ -288,6 +297,7 @@ def latest_canvas_rect_data(canvas_value, original_size, fallback_display_size):
     scale_x = original_size[0] / display_width
     scale_y = original_size[1] / display_height
     return {
+        "selection_id": canvas_value.get("selection_id"),
         "canvas_box": normalized_display_box,
         "displayed_box": normalized_display_box,
         "original_box": corrected_box,
@@ -627,137 +637,188 @@ def render_missing_box_canvas(session, key_prefix):
         if box is not None
     ]
     stored_box_key = f"{key_prefix}_drawn_box_value_{session['id']}"
+    manual_result_key = f"manual_detection_response_{session['id']}"
+    selection_id_key = f"{key_prefix}_selection_id_{session['id']}"
+    reset_counter_key = f"{key_prefix}_canvas_reset_counter_{session['id']}"
     stored_value = st.session_state.get(stored_box_key)
     initial_box = (
         stored_value.get("displayed_box")
         if isinstance(stored_value, dict) and stored_value.get("displayed_box")
         else None
     )
-    canvas_value = render_box_canvas_component(
-        image_base64=original_image_base64,
-        image_mime_type=image_mime_type,
-        display_size=display_size,
-        initial_box=initial_box,
-        existing_boxes=existing_boxes,
-        key=f"{key_prefix}_missing_box_canvas_{session['id']}",
-    )
-    if isinstance(canvas_value, dict) and canvas_value.get("displayed_box"):
-        st.session_state[stored_box_key] = canvas_value
-        stored_value = canvas_value
 
-    rect_data = latest_canvas_rect_data(
-        stored_value,
-        original_size,
-        display_size,
-    )
-    if rect_data is None:
-        st.info("Please draw a box around the missing product first.")
-    else:
-        original_box = rect_data["original_box"]
-        canvas_box = rect_data["canvas_box"]
-        validation_error = box_validation_error(original_box, original_size)
-        st.caption(
-            "Đã chọn vùng: "
-            + ", ".join(f"{value:.1f}" for value in original_box)
+    canvas_col, detail_col = st.columns([2, 1])
+    with canvas_col:
+        canvas_value = render_box_canvas_component(
+            image_base64=original_image_base64,
+            image_mime_type=image_mime_type,
+            display_size=display_size,
+            initial_box=initial_box,
+            existing_boxes=existing_boxes,
+            key=(
+                f"{key_prefix}_missing_box_canvas_{session['id']}_"
+                f"{st.session_state.get(reset_counter_key, 0)}"
+            ),
         )
-        with st.expander("Coordinate debug", expanded=False):
-            st.write(
-                {
-                    "displayed_box": rect_data["displayed_box"],
-                    "preview_size": list(preview_size),
-                    "display_size": rect_data["display_size"],
-                    "original_image_size": list(original_size),
-                    "corrected_box": original_box,
-                    "scale_x": rect_data["scale_x"],
-                    "scale_y": rect_data["scale_y"],
-                    "label": rect_data["label"],
-                    "source": rect_data["source"],
-                }
+        if isinstance(canvas_value, dict) and canvas_value.get("displayed_box"):
+            new_selection_id = canvas_value.get("selection_id")
+            previous_selection_id = st.session_state.get(selection_id_key)
+            st.session_state[stored_box_key] = canvas_value
+            stored_value = canvas_value
+            if new_selection_id and new_selection_id != previous_selection_id:
+                st.session_state[selection_id_key] = new_selection_id
+                st.session_state.pop(manual_result_key, None)
+
+    rect_data = latest_canvas_rect_data(stored_value, original_size, display_size)
+    manual_result = st.session_state.get(manual_result_key)
+
+    with detail_col:
+        st.subheader("Box vừa chọn")
+        if st.button(
+            "Xóa vùng đã chọn",
+            key=f"{key_prefix}_clear_box_{session['id']}",
+            disabled=rect_data is None,
+        ):
+            st.session_state.pop(stored_box_key, None)
+            st.session_state.pop(selection_id_key, None)
+            st.session_state.pop(manual_result_key, None)
+            st.session_state[reset_counter_key] = (
+                st.session_state.get(reset_counter_key, 0) + 1
             )
+            st.rerun()
 
-        if validation_error:
-            st.warning(validation_error)
-        else:
-            preview_crop = crop_from_box(canvas_background, canvas_box)
-            st.image(preview_crop, caption="Crop preview", width=240)
-
-    drawn_product_id = st.text_input(
-        "Product ID (optional)",
-        key=f"{key_prefix}_drawn_product_id_{session['id']}",
-    )
-    st.caption('YOLO label: "product" (class 0)')
-    confirm_save = st.checkbox(
-        "Confirm save this box for YOLO training data",
-        value=False,
-        key=f"{key_prefix}_confirm_yolo_save_{session['id']}",
-    )
-
-    if st.button(
-        "Add drawn box",
-        key=f"{key_prefix}_add_drawn_box_{session['id']}",
-    ):
         if rect_data is None:
-            st.warning("Please draw a box around the missing product first.")
-            return
-        original_box = rect_data["original_box"]
-        validation_error = box_validation_error(original_box, original_size)
-        if validation_error:
-            st.warning(validation_error)
-            return
-        if not confirm_save:
-            st.warning("Please confirm save before adding this annotation.")
-            return
-
-        payload = {
-            "corrected_box": original_box,
-            "confirmed_product_id": drawn_product_id.strip() or None,
-            "user_decision": "manually_added",
-            "displayed_box": rect_data["displayed_box"],
-            "display_size": rect_data["display_size"],
-            "source": "human_missing_box",
-        }
-        try:
-            manual_response = requests.post(
-                f"{API_URL}/review/sessions/{session['id']}/manual-detection",
-                json=payload,
-                timeout=120,
-            )
-        except requests.RequestException as exc:
-            st.error(f"Không thêm được box đã vẽ: {exc}")
+            st.info("Hãy kéo chuột trên ảnh để khoanh vùng sản phẩm còn thiếu.")
         else:
-            if manual_response.status_code == 200:
-                manual_payload = manual_response.json()
-                st.session_state[
-                    f"manual_detection_response_{session['id']}"
-                ] = manual_payload
-                st.success("Đã lưu box và annotation YOLO.")
-                annotation = manual_payload.get("yolo_annotation")
-                if annotation:
-                    with st.expander("Saved YOLO annotation", expanded=True):
-                        st.write(annotation)
-            else:
-                st.error(f"Lỗi khi thêm box đã vẽ: {manual_response.text}")
-
-    manual_result = st.session_state.get(f"manual_detection_response_{session['id']}")
-    if manual_result:
-        manual_crop = image_from_base64(manual_result.get("crop_preview_base64"))
-        if manual_crop is not None:
-            st.image(manual_crop, caption="Crop preview", width=220)
-        if manual_result.get("candidates"):
-            st.caption("Candidate products")
-            st.dataframe(
-                [
-                    {
-                        "product_id": candidate["product_id"],
-                        "name": candidate["name"],
-                        "distance": format_distance(candidate["distance"]),
-                        "embedding": candidate["matched_embedding_id"],
-                    }
-                    for candidate in manual_result["candidates"]
-                ],
-                use_container_width=True,
-                hide_index=True,
+            original_box = rect_data["original_box"]
+            canvas_box = rect_data["canvas_box"]
+            validation_error = box_validation_error(original_box, original_size)
+            st.caption(
+                "Đã chọn vùng: "
+                + ", ".join(f"{value:.1f}" for value in original_box)
             )
+            with st.expander("Chi tiết tọa độ", expanded=False):
+                st.write(
+                    {
+                        "displayed_box": rect_data["displayed_box"],
+                        "preview_size": list(preview_size),
+                        "display_size": rect_data["display_size"],
+                        "original_image_size": list(original_size),
+                        "corrected_box": original_box,
+                        "scale_x": rect_data["scale_x"],
+                        "scale_y": rect_data["scale_y"],
+                        "label": rect_data["label"],
+                        "source": rect_data["source"],
+                    }
+                )
+
+            if validation_error:
+                st.warning(validation_error)
+            else:
+                preview_crop = crop_from_box(canvas_background, canvas_box)
+                st.image(preview_crop, caption="Crop preview", use_container_width=True)
+
+        product_search = st.text_input(
+            "Tìm sản phẩm trong hệ thống",
+            key=f"{key_prefix}_product_search_{session['id']}",
+            placeholder="Nhập mã hoặc tên sản phẩm...",
+        )
+        try:
+            products = fetch_products(search=product_search.strip() or None, limit=100)
+        except requests.RequestException as exc:
+            products = []
+            st.warning(f"Không tải được danh sách sản phẩm: {exc}")
+
+        product_options = ["Không gán sản phẩm có sẵn"]
+        product_by_label = {product_options[0]: None}
+        for product in products:
+            label = (
+                f"{product['product_id']} - {product['name']} "
+                f"(tồn {product['inventory_count']})"
+            )
+            product_options.append(label)
+            product_by_label[label] = product["product_id"]
+
+        selected_product_label = st.selectbox(
+            "Sản phẩm có sẵn",
+            product_options,
+            key=f"{key_prefix}_selected_product_{session['id']}",
+        )
+        confirmed_product_id = product_by_label.get(selected_product_label)
+        external_product_id = st.text_input(
+            "Mã sản phẩm ngoài hệ thống",
+            key=f"{key_prefix}_external_product_id_{session['id']}",
+            placeholder="Nhập nếu sản phẩm chưa có trong hệ thống",
+        ).strip()
+        st.caption("Nhãn AI nhận diện: sản phẩm")
+        confirm_save = st.checkbox(
+            "Xác nhận lưu box này làm dữ liệu huấn luyện AI nhận diện",
+            value=False,
+            key=f"{key_prefix}_confirm_ai_save_{session['id']}",
+        )
+
+        if st.button(
+            "Lưu box đã vẽ",
+            key=f"{key_prefix}_add_drawn_box_{session['id']}",
+        ):
+            if rect_data is None:
+                st.warning("Hãy vẽ box quanh sản phẩm còn thiếu trước.")
+                return
+            original_box = rect_data["original_box"]
+            validation_error = box_validation_error(original_box, original_size)
+            if validation_error:
+                st.warning(validation_error)
+                return
+            if not confirm_save:
+                st.warning("Vui lòng xác nhận trước khi lưu dữ liệu huấn luyện AI.")
+                return
+
+            payload = {
+                "corrected_box": original_box,
+                "confirmed_product_id": confirmed_product_id,
+                "external_product_id": external_product_id or None,
+                "user_decision": "manually_added",
+                "displayed_box": rect_data["displayed_box"],
+                "display_size": rect_data["display_size"],
+                "source": "human_missing_box",
+            }
+            try:
+                manual_response = requests.post(
+                    f"{API_URL}/review/sessions/{session['id']}/manual-detection",
+                    json=payload,
+                    timeout=120,
+                )
+            except requests.RequestException as exc:
+                st.error(f"Không thêm được box đã vẽ: {exc}")
+            else:
+                if manual_response.status_code == 200:
+                    manual_payload = manual_response.json()
+                    st.session_state[manual_result_key] = manual_payload
+                    st.success("Đã lưu box và dữ liệu huấn luyện AI.")
+                    annotation = manual_payload.get("yolo_annotation")
+                    if annotation:
+                        with st.expander("Dữ liệu AI đã lưu", expanded=False):
+                            st.write(annotation)
+                else:
+                    st.error(f"Lỗi khi thêm box đã vẽ: {manual_response.text}")
+
+        if manual_result:
+            st.divider()
+            st.caption("Kết quả AI nhận diện từ crop vừa lưu")
+            if manual_result.get("candidates"):
+                st.dataframe(
+                    [
+                        {
+                            "product_id": candidate["product_id"],
+                            "name": candidate["name"],
+                            "distance": format_distance(candidate["distance"]),
+                            "embedding": candidate["matched_embedding_id"],
+                        }
+                        for candidate in manual_result["candidates"]
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
     with st.expander("Manual coordinate input", expanded=False):
         with st.form(f"{key_prefix}_manual_detection_{session['id']}"):
@@ -791,15 +852,19 @@ def render_missing_box_canvas(session, key_prefix):
                     key=f"{key_prefix}_manual_y2_{session['id']}",
                 )
             manual_product_id = st.text_input(
-                "Product ID (optional)",
+                "Product ID có sẵn (optional)",
                 key=f"{key_prefix}_manual_product_id_{session['id']}",
             )
+            manual_external_product_id = st.text_input(
+                "Mã sản phẩm ngoài hệ thống (optional)",
+                key=f"{key_prefix}_manual_external_product_id_{session['id']}",
+            )
             confirm_manual = st.checkbox(
-                "Confirm save this manual box for YOLO training data",
+                "Xác nhận lưu box thủ công làm dữ liệu huấn luyện AI nhận diện",
                 value=False,
                 key=f"{key_prefix}_manual_confirm_{session['id']}",
             )
-            add_manual = st.form_submit_button("Add missing product box")
+            add_manual = st.form_submit_button("Lưu box sản phẩm bị thiếu")
 
             if add_manual:
                 manual_box = [manual_x1, manual_y1, manual_x2, manual_y2]
@@ -813,6 +878,9 @@ def render_missing_box_canvas(session, key_prefix):
                     payload = {
                         "corrected_box": manual_box,
                         "confirmed_product_id": manual_product_id.strip() or None,
+                        "external_product_id": (
+                            manual_external_product_id.strip() or None
+                        ),
                         "user_decision": "manually_added",
                         "source": "human_missing_box",
                     }
@@ -829,7 +897,7 @@ def render_missing_box_canvas(session, key_prefix):
                             st.session_state[
                                 f"manual_detection_response_{session['id']}"
                             ] = manual_response.json()
-                            st.success("Đã thêm manual detection.")
+                            st.success("Đã thêm box thủ công.")
                         else:
                             st.error(
                                 "Lỗi khi thêm manual detection: "
@@ -838,45 +906,45 @@ def render_missing_box_canvas(session, key_prefix):
 
 
 def render_dataset_export_page():
-    st.header("Dataset YOLO")
+    st.header("Dataset AI nhận diện")
     try:
         summary_response = requests.get(
             f"{API_URL}/yolo-dataset/summary",
             timeout=30,
         )
     except requests.RequestException as exc:
-        st.error(f"Không tải được dataset summary: {exc}")
+        st.error(f"Không tải được tổng quan dữ liệu: {exc}")
         return
 
     if summary_response.status_code != 200:
-        st.error(f"Lỗi dataset summary: {summary_response.text}")
+        st.error(f"Lỗi tổng quan dữ liệu: {summary_response.text}")
         return
 
     summary = summary_response.json()
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Images", summary["image_count"])
-    col2.metric("Label files", summary["label_file_count"])
-    col3.metric("Boxes", summary["box_count"])
-    col4.metric("Pending review", summary["pending_review_count"])
-    st.caption(f"Dataset path: {summary['dataset_dir']}")
+    col1.metric("Ảnh", summary["image_count"])
+    col2.metric("File nhãn", summary["label_file_count"])
+    col3.metric("Box", summary["box_count"])
+    col4.metric("Chờ review", summary["pending_review_count"])
+    st.caption(f"Thư mục dữ liệu: {summary['dataset_dir']}")
     if summary.get("data_yaml_path"):
         st.caption(f"data.yaml: {summary['data_yaml_path']}")
 
-    if st.button("Create / refresh data.yaml"):
+    if st.button("Tạo / cập nhật cấu hình dữ liệu"):
         try:
             export_response = requests.post(
                 f"{API_URL}/yolo-dataset/export-yaml",
                 timeout=30,
             )
         except requests.RequestException as exc:
-            st.error(f"Không tạo được data.yaml: {exc}")
+            st.error(f"Không tạo được cấu hình dữ liệu: {exc}")
         else:
             if export_response.status_code == 200:
                 payload = export_response.json()
-                st.success(f"Đã tạo data.yaml: {payload['data_yaml_path']}")
+                st.success(f"Đã tạo cấu hình dữ liệu: {payload['data_yaml_path']}")
                 st.json(payload["summary"])
             else:
-                st.error(f"Lỗi khi tạo data.yaml: {export_response.text}")
+                st.error(f"Lỗi khi tạo cấu hình dữ liệu: {export_response.text}")
 
 
 def render_settings_page():
@@ -888,7 +956,7 @@ def render_settings_page():
             "DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD": (
                 DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD
             ),
-            "YOLO_DATASET_DIR": "API env YOLO_DATASET_DIR, default data/yolo_dataset",
+            "AI_RECOGNITION_DATASET_DIR": "API env for training data directory",
             "SIMILARITY_RECOGNIZED_THRESHOLD": "API env",
             "SIMILARITY_UNKNOWN_THRESHOLD": "API env",
             "SIMILARITY_MARGIN_THRESHOLD": "API env",
@@ -1088,7 +1156,7 @@ if choice == PAGE_OPERATION:
                         key=f"add_reference_{detection_id}",
                     )
                     st.checkbox(
-                        "Use accepted detections for training data",
+                        "Dùng box đã xác nhận làm dữ liệu huấn luyện AI",
                         value=False,
                         key=f"use_yolo_training_{detection_id}",
                     )
@@ -1352,7 +1420,7 @@ elif choice == PAGE_TRAINING:
                                         value=False,
                                     )
                                     use_for_yolo_training = st.checkbox(
-                                        "Use this reviewed box for YOLO training data",
+                                        "Dùng box đã review làm dữ liệu huấn luyện AI",
                                         value=False,
                                     )
                                     current_box = (
@@ -1543,7 +1611,7 @@ elif choice == PAGE_PRODUCTS:
             key="product_registration_image",
         )
         p_additional_use_full_image = st.checkbox(
-            "Ảnh bổ sung đã crop đúng sản phẩm, không cần YOLO crop lại",
+            "Ảnh bổ sung đã crop đúng sản phẩm, không cần AI crop lại",
             value=True,
             key="registration_additional_use_full_image",
         )
@@ -1697,7 +1765,7 @@ elif choice == PAGE_PRODUCTS:
             key="additional_reference_images",
         )
         use_full_image = st.checkbox(
-            "Ảnh đã crop đúng sản phẩm, không cần YOLO crop lại",
+            "Ảnh đã crop đúng sản phẩm, không cần AI crop lại",
             value=True,
             key="embedding_use_full_image",
         )
