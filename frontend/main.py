@@ -1,56 +1,19 @@
 import base64
 import os
 from io import BytesIO
+from pathlib import Path
 
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image, ImageDraw
-from streamlit_drawable_canvas import st_canvas
 
 
-def patch_drawable_canvas_image_to_url():
-    """Restore the private Streamlit helper expected by streamlit-drawable-canvas.
-
-    The drawable-canvas iframe prefixes Streamlit's origin to this value, so it
-    must be a Streamlit media path like /media/... rather than a data: URL.
-    """
-    try:
-        from streamlit.elements import image as st_image
-        from streamlit.elements.lib.image_utils import (
-            image_to_url as modern_image_to_url,
-        )
-        from streamlit.elements.lib.layout_utils import create_layout_config
-    except Exception:
-        return
-
-    if hasattr(st_image, "image_to_url"):
-        return
-
-    def image_to_url(
-        image,
-        width=None,
-        clamp=False,
-        channels="RGB",
-        output_format="PNG",
-        image_id=None,
-    ):
-        layout_config = create_layout_config(
-            width=width or "content",
-            allow_content_width=True,
-        )
-        return modern_image_to_url(
-            image,
-            layout_config,
-            clamp,
-            channels,
-            output_format,
-            image_id or "drawable-canvas-bg",
-        )
-
-    st_image.image_to_url = image_to_url
-
-
-patch_drawable_canvas_image_to_url()
+BOX_CANVAS_COMPONENT_DIR = Path(__file__).parent / "box_canvas_component"
+box_canvas_component = components.declare_component(
+    "box_canvas_component",
+    path=str(BOX_CANVAS_COMPONENT_DIR),
+)
 
 API_URL = "http://api:8000/api/v1"
 DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD = float(
@@ -193,11 +156,6 @@ def resized_rgb_image(image, size):
     return resized
 
 
-def latest_canvas_rect(canvas_result, original_size, display_size):
-    rect_data = latest_canvas_rect_data(canvas_result, original_size, display_size)
-    return rect_data["original_box"] if rect_data is not None else None
-
-
 def convert_display_box_to_original(display_box, original_size, display_size):
     original_width, original_height = original_size
     display_width, display_height = display_size
@@ -212,36 +170,48 @@ def convert_display_box_to_original(display_box, original_size, display_size):
     ]
 
 
-def latest_canvas_rect_data(canvas_result, original_size, display_size):
-    objects = (canvas_result.json_data or {}).get("objects", [])
-    rectangles = [obj for obj in objects if obj.get("type") == "rect"]
-    if not rectangles:
+def render_box_canvas_component(image_base64, display_size, initial_box, key):
+    display_width, display_height = display_size
+    return box_canvas_component(
+        image_base64=image_base64,
+        width=int(display_width),
+        height=int(display_height),
+        initial_box=initial_box,
+        key=key,
+        default=None,
+    )
+
+
+def latest_canvas_rect_data(canvas_value, original_size, fallback_display_size):
+    if not isinstance(canvas_value, dict):
         return None
 
-    rect = rectangles[-1]
-    display_width, display_height = display_size
+    display_box = canvas_value.get("displayed_box") or canvas_value.get("canvas_box")
+    if not display_box or len(display_box) != 4:
+        return None
 
-    left = float(rect.get("left", 0.0))
-    top = float(rect.get("top", 0.0))
-    width = float(rect.get("width", 0.0)) * float(rect.get("scaleX", 1.0))
-    height = float(rect.get("height", 0.0)) * float(rect.get("scaleY", 1.0))
-
-    display_box = [
-        max(0.0, min(min(left, left + width), float(display_width))),
-        max(0.0, min(min(top, top + height), float(display_height))),
-        max(0.0, min(max(left, left + width), float(display_width))),
-        max(0.0, min(max(top, top + height), float(display_height))),
+    raw_display_size = canvas_value.get("display_size") or fallback_display_size
+    display_width = int(raw_display_size[0])
+    display_height = int(raw_display_size[1])
+    x1, y1, x2, y2 = [float(value) for value in display_box]
+    normalized_display_box = [
+        max(0.0, min(min(x1, x2), float(display_width))),
+        max(0.0, min(min(y1, y2), float(display_height))),
+        max(0.0, min(max(x1, x2), float(display_width))),
+        max(0.0, min(max(y1, y2), float(display_height))),
     ]
     original_box = convert_display_box_to_original(
-        display_box,
+        normalized_display_box,
         original_size,
-        display_size,
+        (display_width, display_height),
     )
     return {
-        "canvas_box": display_box,
-        "displayed_box": display_box,
+        "canvas_box": normalized_display_box,
+        "displayed_box": normalized_display_box,
         "original_box": original_box,
         "display_size": [display_width, display_height],
+        "label": "product",
+        "source": "human_missing_box",
     }
 
 
@@ -537,7 +507,8 @@ def select_review_session(session_prefix):
 
 
 def render_missing_box_canvas(session, key_prefix):
-    preview_image = load_image_for_canvas(session.get("original_image_base64"))
+    original_image_base64 = session.get("original_image_base64")
+    preview_image = load_image_for_canvas(original_image_base64)
     if preview_image is None:
         st.warning("Original image is not available for drawing.")
         return
@@ -554,23 +525,29 @@ def render_missing_box_canvas(session, key_prefix):
     st.caption("Kéo chuột để khoanh vùng sản phẩm bị detect thiếu.")
 
     display_width, display_height = display_dimensions(preview_image, max_width=900)
-    canvas_background = resized_rgb_image(preview_image, (display_width, display_height))
-    canvas_result = st_canvas(
-        fill_color="rgba(22, 163, 74, 0.20)",
-        stroke_width=3,
-        stroke_color="#16a34a",
-        background_image=canvas_background,
-        height=display_height,
-        width=display_width,
-        drawing_mode="rect",
-        update_streamlit=True,
+    display_size = (display_width, display_height)
+    canvas_background = resized_rgb_image(preview_image, display_size)
+    stored_box_key = f"{key_prefix}_drawn_box_value_{session['id']}"
+    stored_value = st.session_state.get(stored_box_key)
+    initial_box = (
+        stored_value.get("displayed_box")
+        if isinstance(stored_value, dict) and stored_value.get("displayed_box")
+        else None
+    )
+    canvas_value = render_box_canvas_component(
+        image_base64=original_image_base64,
+        display_size=display_size,
+        initial_box=initial_box,
         key=f"{key_prefix}_missing_box_canvas_{session['id']}",
     )
+    if isinstance(canvas_value, dict) and canvas_value.get("displayed_box"):
+        st.session_state[stored_box_key] = canvas_value
+        stored_value = canvas_value
 
     rect_data = latest_canvas_rect_data(
-        canvas_result,
+        stored_value,
         original_size,
-        (display_width, display_height),
+        display_size,
     )
     if rect_data is None:
         st.info("Please draw a box around the missing product first.")
@@ -589,6 +566,8 @@ def render_missing_box_canvas(session, key_prefix):
                     "display_size": rect_data["display_size"],
                     "original_image_size": list(original_size),
                     "final_backend_crop_box": original_box,
+                    "label": rect_data["label"],
+                    "source": rect_data["source"],
                 }
             )
 

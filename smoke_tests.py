@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from app.api import (
     MultiRecognizeResponse,
     REVIEW_DECISIONS,
@@ -19,10 +21,21 @@ from app.models import (
 from scripts.export_yolo_dataset import POSITIVE_DECISIONS
 
 
-def test_drawable_canvas_dependency_declared() -> None:
+def test_custom_box_canvas_component_exists() -> None:
+    component_path = Path("frontend/box_canvas_component/index.html")
+    if not component_path.exists():
+        return
+
+    with component_path.open(encoding="utf-8") as component:
+        content = component.read()
+    assert "Streamlit.setComponentValue" in content
+    assert "displayed_box" in content
+
+
+def test_drawable_canvas_dependency_removed() -> None:
     with open("requirements.txt", encoding="utf-8") as requirements:
         content = requirements.read()
-    assert "streamlit-drawable-canvas" in content
+    assert "streamlit-drawable-canvas" not in content
 
 
 def test_required_routes_exist() -> None:
@@ -180,7 +193,8 @@ def test_canvas_box_converts_to_original_coordinates() -> None:
 
 
 if __name__ == "__main__":
-    test_drawable_canvas_dependency_declared()
+    test_custom_box_canvas_component_exists()
+    test_drawable_canvas_dependency_removed()
     test_required_routes_exist()
     test_product_embedding_model_exists()
     test_product_embedding_dimension()
