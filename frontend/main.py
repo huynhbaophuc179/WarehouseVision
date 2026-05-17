@@ -156,12 +156,16 @@ def resized_rgb_image(image, size):
     return resized
 
 
-def convert_display_box_to_original(display_box, original_size, display_size):
-    original_width, original_height = original_size
-    display_width, display_height = display_size
+def convert_display_box_to_original(
+    displayed_box,
+    display_width,
+    display_height,
+    original_width,
+    original_height,
+):
     scale_x = original_width / display_width
     scale_y = original_height / display_height
-    x1, y1, x2, y2 = [float(value) for value in display_box]
+    x1, y1, x2, y2 = [float(value) for value in displayed_box]
     return [
         min(x1, x2) * scale_x,
         min(y1, y2) * scale_y,
@@ -170,13 +174,86 @@ def convert_display_box_to_original(display_box, original_size, display_size):
     ]
 
 
-def render_box_canvas_component(image_base64, display_size, initial_box, key):
+def convert_original_box_to_display(
+    original_box,
+    original_width,
+    original_height,
+    display_width,
+    display_height,
+):
+    scale_x = display_width / original_width
+    scale_y = display_height / original_height
+    x1, y1, x2, y2 = [float(value) for value in original_box]
+    return [
+        min(x1, x2) * scale_x,
+        min(y1, y2) * scale_y,
+        max(x1, x2) * scale_x,
+        max(y1, y2) * scale_y,
+    ]
+
+
+def clamp_box_to_image(box, image_size):
+    width, height = image_size
+    x1, y1, x2, y2 = [float(value) for value in box]
+    return [
+        max(0.0, min(min(x1, x2), float(width))),
+        max(0.0, min(min(y1, y2), float(height))),
+        max(0.0, min(max(x1, x2), float(width))),
+        max(0.0, min(max(y1, y2), float(height))),
+    ]
+
+
+def box_validation_error(box, image_size, min_size=10.0):
+    if not box or len(box) != 4:
+        return "Please draw a box around the missing product first."
+
+    clamped_box = clamp_box_to_image(box, image_size)
+    width = clamped_box[2] - clamped_box[0]
+    height = clamped_box[3] - clamped_box[1]
+    if clamped_box[0] >= clamped_box[2] or clamped_box[1] >= clamped_box[3]:
+        return "Selected box is invalid."
+    if width < min_size or height < min_size:
+        return "Selected box is too small."
+    return None
+
+
+def review_box_to_display_box(detection, original_size, display_size):
+    original_box = detection.get("corrected_box") or detection.get("original_box")
+    if not original_box:
+        return None
+    original_width, original_height = original_size
+    display_width, display_height = display_size
+    return {
+        "box": convert_original_box_to_display(
+            original_box,
+            original_width,
+            original_height,
+            display_width,
+            display_height,
+        ),
+        "label": str(detection.get("detection_index") or detection.get("id") or ""),
+        "status": detection.get("user_decision") or "existing",
+        "product_id": detection.get("confirmed_product_id")
+        or detection.get("predicted_product_id"),
+    }
+
+
+def render_box_canvas_component(
+    image_base64,
+    image_mime_type,
+    display_size,
+    initial_box,
+    existing_boxes,
+    key,
+):
     display_width, display_height = display_size
     return box_canvas_component(
         image_base64=image_base64,
+        image_mime_type=image_mime_type or "image/jpeg",
         width=int(display_width),
         height=int(display_height),
         initial_box=initial_box,
+        existing_boxes=existing_boxes,
         key=key,
         default=None,
     )
@@ -202,14 +279,22 @@ def latest_canvas_rect_data(canvas_value, original_size, fallback_display_size):
     ]
     original_box = convert_display_box_to_original(
         normalized_display_box,
-        original_size,
-        (display_width, display_height),
+        display_width,
+        display_height,
+        original_size[0],
+        original_size[1],
     )
+    corrected_box = clamp_box_to_image(original_box, original_size)
+    scale_x = original_size[0] / display_width
+    scale_y = original_size[1] / display_height
     return {
         "canvas_box": normalized_display_box,
         "displayed_box": normalized_display_box,
-        "original_box": original_box,
+        "original_box": corrected_box,
+        "corrected_box": corrected_box,
         "display_size": [display_width, display_height],
+        "scale_x": scale_x,
+        "scale_y": scale_y,
         "label": "product",
         "source": "human_missing_box",
     }
@@ -522,11 +607,25 @@ def render_missing_box_canvas(session, key_prefix):
     )
 
     st.subheader("Vẽ box sản phẩm bị thiếu")
-    st.caption("Kéo chuột để khoanh vùng sản phẩm bị detect thiếu.")
+    st.caption("Kéo chuột để khoanh vùng sản phẩm bị hệ thống detect thiếu.")
 
     display_width, display_height = display_dimensions(preview_image, max_width=900)
     display_size = (display_width, display_height)
     canvas_background = resized_rgb_image(preview_image, display_size)
+    image_mime_type = (
+        session.get("preview_image_mime_type")
+        or session.get("original_image_mime_type")
+        or "image/jpeg"
+    )
+    existing_boxes = [
+        box
+        for box in (
+            review_box_to_display_box(detection, original_size, display_size)
+            for detection in session.get("detections", [])
+            if detection.get("user_decision") != "manually_added"
+        )
+        if box is not None
+    ]
     stored_box_key = f"{key_prefix}_drawn_box_value_{session['id']}"
     stored_value = st.session_state.get(stored_box_key)
     initial_box = (
@@ -536,8 +635,10 @@ def render_missing_box_canvas(session, key_prefix):
     )
     canvas_value = render_box_canvas_component(
         image_base64=original_image_base64,
+        image_mime_type=image_mime_type,
         display_size=display_size,
         initial_box=initial_box,
+        existing_boxes=existing_boxes,
         key=f"{key_prefix}_missing_box_canvas_{session['id']}",
     )
     if isinstance(canvas_value, dict) and canvas_value.get("displayed_box"):
@@ -554,27 +655,28 @@ def render_missing_box_canvas(session, key_prefix):
     else:
         original_box = rect_data["original_box"]
         canvas_box = rect_data["canvas_box"]
+        validation_error = box_validation_error(original_box, original_size)
         st.caption(
-            "Final backend crop box: "
+            "Đã chọn vùng: "
             + ", ".join(f"{value:.1f}" for value in original_box)
         )
         with st.expander("Coordinate debug", expanded=False):
             st.write(
                 {
-                    "canvas_box": canvas_box,
+                    "displayed_box": rect_data["displayed_box"],
                     "preview_size": list(preview_size),
                     "display_size": rect_data["display_size"],
                     "original_image_size": list(original_size),
-                    "final_backend_crop_box": original_box,
+                    "corrected_box": original_box,
+                    "scale_x": rect_data["scale_x"],
+                    "scale_y": rect_data["scale_y"],
                     "label": rect_data["label"],
                     "source": rect_data["source"],
                 }
             )
 
-        if box_outside_image(original_box, original_size):
-            st.warning("Selected box is outside the image bounds.")
-        elif box_is_too_small(original_box):
-            st.warning("Selected box is too small.")
+        if validation_error:
+            st.warning(validation_error)
         else:
             preview_crop = crop_from_box(canvas_background, canvas_box)
             st.image(preview_crop, caption="Crop preview", width=240)
@@ -598,11 +700,9 @@ def render_missing_box_canvas(session, key_prefix):
             st.warning("Please draw a box around the missing product first.")
             return
         original_box = rect_data["original_box"]
-        if box_is_too_small(original_box):
-            st.warning("Selected box is too small.")
-            return
-        if box_outside_image(original_box, original_size):
-            st.warning("Selected box is outside the image bounds.")
+        validation_error = box_validation_error(original_box, original_size)
+        if validation_error:
+            st.warning(validation_error)
             return
         if not confirm_save:
             st.warning("Please confirm save before adding this annotation.")

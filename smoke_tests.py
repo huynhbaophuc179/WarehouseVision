@@ -30,6 +30,8 @@ def test_custom_box_canvas_component_exists() -> None:
         content = component.read()
     assert "Streamlit.setComponentValue" in content
     assert "displayed_box" in content
+    assert "image_mime_type" in content
+    assert "existing_boxes" in content
 
 
 def test_drawable_canvas_dependency_removed() -> None:
@@ -147,8 +149,10 @@ def test_review_session_response_image_size_fields_exist() -> None:
     required_fields = {
         "original_image_width",
         "original_image_height",
+        "original_image_mime_type",
         "preview_image_width",
         "preview_image_height",
+        "preview_image_mime_type",
     }
     missing_fields = required_fields - set(fields)
     assert not missing_fields, f"Missing response fields: {sorted(missing_fields)}"
@@ -185,10 +189,10 @@ def test_yolo_box_conversion() -> None:
 def test_canvas_box_converts_to_original_coordinates() -> None:
     assert convert_display_box_to_original(
         [90.0, 60.0, 180.0, 120.0],
-        original_width=3000,
-        original_height=2000,
         display_width=900,
         display_height=600,
+        original_width=3000,
+        original_height=2000,
     ) == [300.0, 200.0, 600.0, 400.0]
 
 

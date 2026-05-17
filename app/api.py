@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import mimetypes
 import os
 import shutil
 import tempfile
@@ -212,8 +213,10 @@ class RecognitionSessionDetail(RecognitionSessionSummary):
     original_image_base64: str | None
     original_image_width: int | None
     original_image_height: int | None
+    original_image_mime_type: str | None
     preview_image_width: int | None
     preview_image_height: int | None
+    preview_image_mime_type: str | None
     detections: list[DetectionReviewResponse]
 
 
@@ -311,10 +314,10 @@ def convert_box_to_yolo(
 
 def convert_display_box_to_original(
     display_box: list[float],
-    original_width: int,
-    original_height: int,
     display_width: int,
     display_height: int,
+    original_width: int,
+    original_height: int,
 ) -> list[float]:
     scale_x = original_width / display_width
     scale_y = original_height / display_height
@@ -393,18 +396,32 @@ def save_yolo_annotation(
     metadata = {
         "annotation_id": annotation_id,
         "original_filename": Path(session.original_image_path).name,
+        "original_image_path": session.original_image_path,
         "saved_image_path": str(image_path),
+        "saved_dataset_image_path": str(image_path),
         "saved_label_path": str(label_path),
+        "saved_yolo_label_path": str(label_path),
         "product_id": product.product_id if product is not None else None,
         "product_name": product.name if product is not None else None,
+        "corrected_box": clamped_box,
         "box_original_pixels": {
             "x1": clamped_box[0],
             "y1": clamped_box[1],
             "x2": clamped_box[2],
             "y2": clamped_box[3],
         },
+        "displayed_box": displayed_box,
         "box_display_pixels": displayed_box,
         "display_size": display_size,
+        "original_image_width": width,
+        "original_image_height": height,
+        "normalized_yolo_box": {
+            "class_id": 0,
+            "x_center": yolo_box[0],
+            "y_center": yolo_box[1],
+            "width": yolo_box[2],
+            "height": yolo_box[3],
+        },
         "yolo_box": {
             "class_id": 0,
             "x_center": yolo_box[0],
@@ -431,6 +448,12 @@ def save_yolo_annotation(
         "image_path": str(image_path),
         "label_path": str(label_path),
         "metadata_path": metadata_path,
+        "displayed_box": displayed_box,
+        "display_size": display_size,
+        "corrected_box": clamped_box,
+        "original_image_width": width,
+        "original_image_height": height,
+        "normalized_yolo_box": metadata["normalized_yolo_box"],
     }
 
 
@@ -509,6 +532,18 @@ def _image_dimensions(path: str | None) -> tuple[int | None, int | None]:
 
     with Image.open(path) as image:
         return image.size
+
+
+def _image_mime_type(path: str | None) -> str | None:
+    if not path or not os.path.exists(path):
+        return None
+
+    try:
+        with Image.open(path) as image:
+            return image.get_format_mimetype()
+    except Exception:
+        guessed_mime_type, _ = mimetypes.guess_type(path)
+        return guessed_mime_type
 
 
 def _image_to_base64_with_size(
@@ -1195,6 +1230,7 @@ def get_review_session(session_id: int, db: Session = Depends(get_db)):
         .all()
     )
     original_width, original_height = _image_dimensions(session.original_image_path)
+    original_mime_type = _image_mime_type(session.original_image_path)
     preview_base64, preview_width, preview_height = _image_to_base64_with_size(
         session.original_image_path,
         max_size=(1200, 1200),
@@ -1209,8 +1245,10 @@ def get_review_session(session_id: int, db: Session = Depends(get_db)):
         original_image_base64=preview_base64,
         original_image_width=original_width,
         original_image_height=original_height,
+        original_image_mime_type=original_mime_type,
         preview_image_width=preview_width,
         preview_image_height=preview_height,
+        preview_image_mime_type="image/jpeg" if preview_base64 else None,
         detections=[_review_response(review) for review in detections],
     )
 

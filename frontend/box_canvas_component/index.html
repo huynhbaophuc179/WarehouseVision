@@ -32,6 +32,37 @@
         font-size: 13px;
         margin-top: 8px;
       }
+
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+        color: #cbd5e1;
+        font-size: 13px;
+        margin-top: 8px;
+      }
+
+      .legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .legend-swatch {
+        width: 16px;
+        height: 10px;
+        border-radius: 2px;
+      }
+
+      .existing-swatch {
+        border: 2px dashed #2563eb;
+        background: rgba(37, 99, 235, 0.12);
+      }
+
+      .missing-swatch {
+        border: 2px solid #16a34a;
+        background: rgba(22, 163, 74, 0.18);
+      }
     </style>
   </head>
   <body>
@@ -39,6 +70,16 @@
       <canvas id="box-canvas"></canvas>
       <div class="hint" id="hint">
         Đang tải ảnh vào canvas...
+      </div>
+      <div class="legend">
+        <span class="legend-item">
+          <span class="legend-swatch existing-swatch"></span>
+          Existing AI detections
+        </span>
+        <span class="legend-item">
+          <span class="legend-swatch missing-swatch"></span>
+          User-added missing box
+        </span>
       </div>
     </div>
 
@@ -85,9 +126,16 @@
       const image = new Image();
       let args = {};
       let imageLoaded = false;
+      let imageError = null;
       let drawing = false;
       let startPoint = null;
       let currentBox = null;
+      let existingBoxes = [];
+
+      function safeMimeType(value) {
+        const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
+        return allowedTypes.has(value) ? value : "image/jpeg";
+      }
 
       function normalizeBox(box) {
         const x1 = Math.max(0, Math.min(box[0], box[2], canvas.width));
@@ -125,16 +173,45 @@
         ctx.restore();
       }
 
+      function drawExistingBox(item) {
+        if (!item || !Array.isArray(item.box)) {
+          return;
+        }
+        const normalized = normalizeBox(item.box);
+        const x = normalized[0];
+        const y = normalized[1];
+        const width = normalized[2] - normalized[0];
+        const height = normalized[3] - normalized[1];
+
+        ctx.save();
+        ctx.strokeStyle = "#2563eb";
+        ctx.fillStyle = "rgba(37, 99, 235, 0.08)";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([8, 5]);
+        ctx.fillRect(x, y, width, height);
+        ctx.strokeRect(x, y, width, height);
+        ctx.setLineDash([]);
+        if (item.label) {
+          ctx.fillStyle = "#2563eb";
+          ctx.fillRect(x, Math.max(0, y - 22), 32, 22);
+          ctx.fillStyle = "#ffffff";
+          ctx.font = "13px sans-serif";
+          ctx.fillText(String(item.label), x + 8, Math.max(14, y - 7));
+        }
+        ctx.restore();
+      }
+
       function redraw() {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         if (imageLoaded) {
           ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+          existingBoxes.forEach(drawExistingBox);
         } else {
           ctx.fillStyle = "#111827";
           ctx.fillRect(0, 0, canvas.width, canvas.height);
           ctx.fillStyle = "#e5e7eb";
           ctx.font = "16px sans-serif";
-          ctx.fillText("Đang tải ảnh...", 24, 40);
+          ctx.fillText(imageError || "Đang tải ảnh...", 24, 40);
         }
         drawBox(currentBox);
       }
@@ -157,6 +234,10 @@
 
       function startDrawing(event) {
         event.preventDefault();
+        if (!imageLoaded) {
+          hint.textContent = imageError || "Vui lòng chờ ảnh tải xong trước khi vẽ.";
+          return;
+        }
         if (event.pointerId !== undefined && canvas.setPointerCapture) {
           canvas.setPointerCapture(event.pointerId);
         }
@@ -250,6 +331,8 @@
         const height = Number(args.height || 600);
         const initialBox = Array.isArray(args.initial_box) ? args.initial_box : null;
         const imageBase64 = args.image_base64 || "";
+        const mimeType = safeMimeType(args.image_mime_type || "image/jpeg");
+        existingBoxes = Array.isArray(args.existing_boxes) ? args.existing_boxes : [];
 
         canvas.width = width;
         canvas.height = height;
@@ -258,11 +341,13 @@
 
         currentBox = initialBox ? normalizeBox(initialBox) : currentBox;
         imageLoaded = false;
+        imageError = null;
         hint.textContent = "Đang tải ảnh vào canvas...";
         redraw();
 
         image.onload = () => {
           imageLoaded = true;
+          imageError = null;
           hint.textContent =
             "Ảnh đã tải. Kéo chuột để vẽ một box, vẽ lại để thay box hiện tại.";
           redraw();
@@ -270,11 +355,12 @@
         };
         image.onerror = () => {
           imageLoaded = false;
+          imageError = "Không tải được ảnh nền.";
           hint.textContent = "Không tải được ảnh nền. Hãy thử refresh session.";
           redraw();
           Streamlit.setFrameHeight(document.body.scrollHeight + 4);
         };
-        image.src = `data:image/jpeg;base64,${imageBase64}`;
+        image.src = `data:${mimeType};base64,${imageBase64}`;
 
         Streamlit.setFrameHeight(document.body.scrollHeight + 4);
       }
