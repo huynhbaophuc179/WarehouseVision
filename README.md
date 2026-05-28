@@ -120,6 +120,10 @@ Example response:
     "box": [10.0, 20.0, 140.0, 180.0],
     "crop_preview_base64": "/9j/4AAQSkZJRgABAQ...",
     "detector_confidence": 0.87,
+    "detector_backend": "yolov8",
+    "detector_model": "yolov8n.pt",
+    "detector_prompt": "product",
+    "detector_class_name": "product",
     "product_id": "CUP-001",
     "name": "Test Cup",
     "inventory_count": 25,
@@ -317,11 +321,21 @@ API service variables in `docker-compose.yml`:
 - `CATEGORY_MATCH_BONUS_MAX`: maximum positive final-score bonus from category metadata, default `0.03`.
 - `HIGH_CONFIDENCE_THRESHOLD`: minimum final score for `HIGH` confidence, default `0.85`.
 - `MEDIUM_CONFIDENCE_THRESHOLD`: minimum final score for `MEDIUM` confidence, default `0.70`.
+- `DETECTOR_BACKEND`: detector backend, default `yolov8`. Allowed values are `yolov8` and `yolo_world`.
+- `FALLBACK_TO_YOLOV8`: when `true`, YOLO-World load/runtime failures fall back to the existing YOLOv8 detector.
 - `YOLO_CONFIDENCE_THRESHOLD`: YOLO prediction confidence threshold, default `0.25`.
 - `YOLO_IOU_THRESHOLD`: YOLO NMS IoU threshold, default `0.45`.
 - `YOLO_MAX_DETECTIONS`: maximum YOLO detections per image, default `20`.
 - `YOLO_MODEL_PATH`: YOLO model path, default `yolov8n.pt`.
 - `YOLO_CLASSES`: comma-separated YOLO class IDs to detect. Use an empty value for the generic PoC so YOLO is not restricted to a few COCO classes.
+- `YOLO_WORLD_MODEL`: YOLO-World model path or Ultralytics weight name, default `yolov8s-world.pt`.
+- `YOLO_WORLD_PROMPTS`: comma-separated open-vocabulary prompts for YOLO-World.
+- `YOLO_WORLD_CONFIDENCE`: YOLO-World confidence threshold, default `0.20`.
+- `YOLO_WORLD_IOU`: YOLO-World NMS IoU threshold, default `0.50`.
+- `YOLO_WORLD_MAX_DETECTIONS`: maximum raw YOLO-World detections per image, default `30`.
+- `MIN_DETECTION_AREA_RATIO`: minimum detector box area relative to the full image, default `0.002`.
+- `MAX_DETECTION_AREA_RATIO`: maximum detector box area relative to the full image unless confidence is very high, default `0.80`.
+- `MAX_DETECTIONS_PER_IMAGE`: post-filter maximum detector boxes per image, default `30`.
 - `CLIP_MODEL_NAME`: Hugging Face CLIP model name, default `openai/clip-vit-base-patch32`.
 - `RECOGNITION_CANDIDATE_LIMIT`: backward-compatible alias for candidate count. Prefer `TOP_K_CANDIDATES`; Docker defaults both to `5`.
 - `REVIEW_STORAGE_DIR`: directory for recognition session images and detection crops. Docker sets this to `/data/reviews`; local runs default to `review_data`.
@@ -332,7 +346,7 @@ API service variables in `docker-compose.yml`:
 - `MIN_CROP_AREA_RATIO`: minimum crop area relative to full image before recognition is attempted, default `0.001`.
 - `LOG_LEVEL`: Python logging level for the API, default `INFO`.
 
-For this generic PoC, keep `YOLO_CLASSES=""`. In production, train or provide a one-class YOLO model for `product` detection, then calibrate `YOLO_CLASSES` and detection thresholds around real warehouse images.
+For this generic PoC, keep `DETECTOR_BACKEND=yolov8` and `YOLO_CLASSES=""`. In production, train or provide a one-class YOLO model for `product` detection, then calibrate detection thresholds around real warehouse images.
 
 ## Recognition Roadmap
 
@@ -351,6 +365,45 @@ The default `yolov8n.pt` model is only a placeholder trained on COCO classes. Fo
 After training, copy the weights to `./models/best.pt`, set `YOLO_MODEL_PATH=/models/best.pt`, and restart with Docker Compose. The API service mounts `./models` to `/models`. See `docs/detector_training.md` for dataset layout, annotation rules, and training commands.
 
 Recognition thresholds must be calibrated with real product photos. A direct `recognized` result now requires both detector confidence and visual similarity confidence. If wrong boxes are recognized as a known SKU, raise `DETECTOR_RECOGNIZED_CONFIDENCE_THRESHOLD`, lower `SIMILARITY_RECOGNIZED_THRESHOLD`, lower `SIMILARITY_UNKNOWN_THRESHOLD`, or raise `SIMILARITY_MARGIN_THRESHOLD`. If valid products are often missed, loosen these gradually while watching false positives.
+
+## Optional YOLO-World Detector
+
+The detector backend can be switched without changing the rest of the pipeline:
+
+```bash
+DETECTOR_BACKEND=yolov8
+YOLO_MODEL_PATH=yolov8n.pt
+```
+
+YOLO-World can be used for open-vocabulary PoC detection and pseudo-labeling before enough warehouse data exists for a custom one-class detector:
+
+```bash
+DETECTOR_BACKEND=yolo_world
+YOLO_WORLD_MODEL=yolov8s-world.pt
+YOLO_WORLD_PROMPTS=product,industrial component,electrical component,small box,package,button switch,relay,connector,pneumatic fitting,plastic wrapped product
+YOLO_WORLD_CONFIDENCE=0.20
+FALLBACK_TO_YOLOV8=true
+```
+
+The app tries to call `set_classes()` with the configured prompts when the installed Ultralytics version supports it. If prompt setup fails, the API logs a warning and continues with model defaults if possible. If the YOLO-World model cannot load and `FALLBACK_TO_YOLOV8=true`, the current YOLOv8 detector is used instead.
+
+YOLO-World may download weights automatically through Ultralytics when `YOLO_WORLD_MODEL=yolov8s-world.pt`. For offline deployment, place the model file under `./models`, set `YOLO_WORLD_MODEL=/models/<file>.pt`, and keep the existing Docker Compose model volume.
+
+Available prompt presets in code:
+
+- `general_product`: `product, package, box, small object`
+- `industrial_parts`: `industrial component, electrical component, button switch, relay, connector, pneumatic fitting, terminal block`
+- `plastic_wrapped`: `plastic wrapped product, bagged component, small packaged item`
+
+Use `YOLO_WORLD_PROMPTS` to override all presets.
+
+YOLO-World is not the long-term detector target. It is a bridge for open-vocabulary experiments and collecting better review data. The intended production path remains:
+
+```text
+custom YOLO 1-class product detector -> crop -> CLIP/OCR/vector search -> human confirmation
+```
+
+In `Cài đặt`, the Streamlit app has a detector debug section and a `Run both detectors` comparison tool. It runs YOLOv8 and YOLO-World on the same image and shows detection counts, boxes, class names, prompts, and fallback status without changing normal recognition results.
 
 ## Database Initialization
 

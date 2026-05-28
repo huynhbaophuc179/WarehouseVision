@@ -19,6 +19,8 @@ services:
     build: .
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/visual_inventory
+      DETECTOR_BACKEND: yolov8
+      FALLBACK_TO_YOLOV8: "true"
       DETECTOR_RECOGNIZED_CONFIDENCE_THRESHOLD: "0.60"
       DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD: "0.45"
       SIMILARITY_RECOGNIZED_THRESHOLD: "0.15"
@@ -42,6 +44,14 @@ services:
       YOLO_MAX_DETECTIONS: "20"
       YOLO_MODEL_PATH: yolov8n.pt
       YOLO_CLASSES: ""
+      YOLO_WORLD_MODEL: yolov8s-world.pt
+      YOLO_WORLD_PROMPTS: product,industrial component,electrical component,small box,package,button switch,relay,connector,pneumatic fitting,plastic wrapped product
+      YOLO_WORLD_CONFIDENCE: "0.20"
+      YOLO_WORLD_IOU: "0.50"
+      YOLO_WORLD_MAX_DETECTIONS: "30"
+      MIN_DETECTION_AREA_RATIO: "0.002"
+      MAX_DETECTION_AREA_RATIO: "0.80"
+      MAX_DETECTIONS_PER_IMAGE: "30"
       CLIP_MODEL_NAME: openai/clip-vit-base-patch32
       RECOGNITION_CANDIDATE_LIMIT: "5"
       REVIEW_STORAGE_DIR: /data/reviews

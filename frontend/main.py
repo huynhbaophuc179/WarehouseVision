@@ -585,6 +585,20 @@ def fetch_review_session(session_id):
     return response.json()
 
 
+def fetch_detector_settings():
+    response = requests.get(f"{API_URL}/detector/settings", timeout=30)
+    response.raise_for_status()
+    return response.json()
+
+
+def compare_detectors(uploaded_file):
+    return requests.post(
+        f"{API_URL}/detector/compare",
+        files=build_file_payload(uploaded_file),
+        timeout=120,
+    )
+
+
 def select_review_session(session_prefix):
     try:
         sessions = fetch_review_sessions(limit=50)
@@ -978,6 +992,78 @@ def render_settings_page():
             "SIMILARITY_MARGIN_THRESHOLD": "API env",
         }
     )
+    st.subheader("Detector debug")
+    try:
+        detector_settings = fetch_detector_settings()
+    except requests.RequestException as exc:
+        st.warning(f"Không tải được detector settings: {exc}")
+    else:
+        summary_cols = st.columns(4)
+        summary_cols[0].metric(
+            "Backend",
+            detector_settings.get("active_backend")
+            or detector_settings.get("detector_backend")
+            or "-",
+        )
+        summary_cols[1].metric("YOLOv8", detector_settings.get("yolov8_model", "-"))
+        summary_cols[2].metric(
+            "YOLO-World",
+            detector_settings.get("yolo_world_model", "-"),
+        )
+        summary_cols[3].metric(
+            "Max boxes",
+            detector_settings.get("max_detections_per_image", "-"),
+        )
+        with st.expander("Chi tiết detector", expanded=False):
+            st.json(detector_settings)
+
+    st.subheader("So sánh detector")
+    compare_file = st.file_uploader(
+        "Chọn ảnh để so sánh YOLOv8 và YOLO-World",
+        type=["jpg", "jpeg", "png"],
+        key="detector_compare_file",
+    )
+    if compare_file and st.button("Run both detectors"):
+        with st.spinner("Đang chạy hai detector..."):
+            try:
+                compare_response = compare_detectors(compare_file)
+            except requests.RequestException as exc:
+                st.error(f"Không chạy được detector comparison: {exc}")
+            else:
+                if compare_response.status_code != 200:
+                    st.error(f"Lỗi detector comparison: {compare_response.text}")
+                else:
+                    payload = compare_response.json()
+                    comparison = payload["comparison"]
+                    cols = st.columns(2)
+                    for col, key in zip(cols, ["yolov8", "yolo_world"]):
+                        section = comparison[key]
+                        with col:
+                            st.metric(
+                                f"{section['backend']} detections",
+                                section["detection_count"],
+                            )
+                            if section.get("error"):
+                                st.warning(section["error"])
+                            if section.get("fallback_used"):
+                                st.info("Đã fallback sang YOLOv8.")
+                            st.dataframe(
+                                [
+                                    {
+                                        "box": detection["box"],
+                                        "confidence": format_confidence(
+                                            detection.get("detector_confidence")
+                                        ),
+                                        "class": detection.get("detector_class_name")
+                                        or "-",
+                                        "prompt": detection.get("detector_prompt")
+                                        or "-",
+                                    }
+                                    for detection in section.get("detections", [])
+                                ],
+                                use_container_width=True,
+                                hide_index=True,
+                            )
 
 
 if choice == PAGE_OPERATION:
@@ -1157,6 +1243,11 @@ if choice == PAGE_OPERATION:
                             "session_id": item.get("session_id"),
                             "review_id": item.get("review_id"),
                             "box": item.get("box"),
+                            "detector_backend": item.get("detector_backend"),
+                            "detector_model": item.get("detector_model"),
+                            "detector_prompt": item.get("detector_prompt"),
+                            "detector_class_id": item.get("detector_class_id"),
+                            "detector_class_name": item.get("detector_class_name"),
                             "detector_confidence": format_confidence(
                                 item.get("detector_confidence")
                             ),

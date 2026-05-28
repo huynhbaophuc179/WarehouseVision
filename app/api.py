@@ -23,6 +23,8 @@ from PIL import Image
 
 from .ai_pipeline import (
     RegistrationImageError,
+    compare_detectors,
+    get_detector_info,
     process_image,
     process_multiple_images,
     process_registration_image,
@@ -158,6 +160,11 @@ class MultiRecognizeResponse(BaseModel):
     box: list[float]
     crop_preview_base64: str | None
     detector_confidence: float | None
+    detector_backend: str | None = None
+    detector_model: str | None = None
+    detector_prompt: str | None = None
+    detector_class_id: int | None = None
+    detector_class_name: str | None = None
     product_id: str | None
     name: str | None
     inventory_count: int | None
@@ -184,6 +191,11 @@ class MultiRecognizeResponse(BaseModel):
 
 class RecognizeCandidatesResponse(BaseModel):
     candidates: list[CandidateResponse]
+
+
+class DetectorCompareResponse(BaseModel):
+    detector_settings: dict
+    comparison: dict
 
 
 class ConfirmedInventoryItem(BaseModel):
@@ -1471,6 +1483,11 @@ async def recognize(
                 "box": item["box"],
                 "crop_preview_base64": item.get("crop_preview_base64"),
                 "detector_confidence": item.get("detector_confidence"),
+                "detector_backend": item.get("detector_backend"),
+                "detector_model": item.get("detector_model"),
+                "detector_prompt": item.get("detector_prompt"),
+                "detector_class_id": item.get("detector_class_id"),
+                "detector_class_name": item.get("detector_class_name"),
                 "product_id": None,
                 "name": None,
                 "inventory_count": None,
@@ -1733,6 +1750,32 @@ async def recognize_candidates(
         return RecognizeCandidatesResponse(
             candidates=_ranked_candidate_responses(results)
         )
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+@app.get("/api/v1/detector/settings")
+def detector_settings():
+    try:
+        return get_detector_info()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/detector/compare", response_model=DetectorCompareResponse)
+async def detector_compare(file: UploadFile = File(...)):
+    _ensure_image(file)
+    temp_path = _save_upload_to_temp(file)
+
+    try:
+        comparison = compare_detectors(temp_path)
+        return DetectorCompareResponse(
+            detector_settings=get_detector_info(),
+            comparison=comparison,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)

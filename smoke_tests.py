@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import app.ai_pipeline as ai_pipeline
 from app.api import (
     CandidateResponse,
     ENABLE_OCR,
@@ -18,6 +19,11 @@ from app.api import (
     convert_display_box_to_original,
 )
 from app.ai_pipeline import (
+    DetectionResult,
+    MAX_DETECTIONS_PER_IMAGE,
+    _detection_to_dict,
+    _filter_detection_results,
+    get_detector,
     YOLO_CONFIDENCE_THRESHOLD,
     YOLO_IOU_THRESHOLD,
     YOLO_MAX_DETECTIONS,
@@ -59,6 +65,8 @@ def test_required_routes_exist() -> None:
         "/api/v1/products/{product_id}/embeddings",
         "/api/v1/recognize",
         "/api/v1/recognize/candidates",
+        "/api/v1/detector/settings",
+        "/api/v1/detector/compare",
         "/api/v1/inventory/confirm",
         "/api/v1/review/sessions",
         "/api/v1/review/sessions/{session_id}",
@@ -167,6 +175,11 @@ def test_recognize_response_debug_fields_exist() -> None:
     required_fields = {
         "crop_preview_base64",
         "detector_confidence",
+        "detector_backend",
+        "detector_model",
+        "detector_prompt",
+        "detector_class_id",
+        "detector_class_name",
         "top1_distance",
         "top2_distance",
         "distance_margin",
@@ -287,6 +300,128 @@ def test_yolo_prediction_defaults_exist() -> None:
     assert 0.0 <= YOLO_CONFIDENCE_THRESHOLD <= 1.0
     assert 0.0 <= YOLO_IOU_THRESHOLD <= 1.0
     assert YOLO_MAX_DETECTIONS >= 1
+    assert MAX_DETECTIONS_PER_IMAGE >= 1
+
+
+def test_detector_factory_uses_yolov8_by_default() -> None:
+    original_backend = ai_pipeline.DETECTOR_BACKEND
+    original_yolov8_detector = ai_pipeline.YOLOv8Detector
+
+    class FakeYOLOv8Detector:
+        source = "yolov8"
+
+        def __init__(self):
+            self.model_name = "fake-yolov8"
+
+    try:
+        ai_pipeline.DETECTOR_BACKEND = "yolov8"
+        ai_pipeline.YOLOv8Detector = FakeYOLOv8Detector
+        get_detector.cache_clear()
+        assert get_detector().source == "yolov8"
+    finally:
+        ai_pipeline.DETECTOR_BACKEND = original_backend
+        ai_pipeline.YOLOv8Detector = original_yolov8_detector
+        get_detector.cache_clear()
+
+
+def test_detector_factory_can_select_yolo_world() -> None:
+    original_backend = ai_pipeline.DETECTOR_BACKEND
+    original_world_detector = ai_pipeline.YOLOWorldDetector
+
+    class FakeYOLOWorldDetector:
+        source = "yolo_world"
+
+        def __init__(self):
+            self.model_name = "fake-world"
+
+    try:
+        ai_pipeline.DETECTOR_BACKEND = "yolo_world"
+        ai_pipeline.YOLOWorldDetector = FakeYOLOWorldDetector
+        get_detector.cache_clear()
+        assert get_detector().source == "yolo_world"
+    finally:
+        ai_pipeline.DETECTOR_BACKEND = original_backend
+        ai_pipeline.YOLOWorldDetector = original_world_detector
+        get_detector.cache_clear()
+
+
+def test_yolo_world_fallback_to_yolov8() -> None:
+    original_backend = ai_pipeline.DETECTOR_BACKEND
+    original_fallback = ai_pipeline.FALLBACK_TO_YOLOV8
+    original_world_detector = ai_pipeline.YOLOWorldDetector
+    original_yolov8_detector = ai_pipeline.YOLOv8Detector
+
+    class BrokenYOLOWorldDetector:
+        def __init__(self):
+            raise RuntimeError("missing model")
+
+    class FakeYOLOv8Detector:
+        source = "yolov8"
+
+        def __init__(self):
+            self.model_name = "fake-yolov8"
+
+    try:
+        ai_pipeline.DETECTOR_BACKEND = "yolo_world"
+        ai_pipeline.FALLBACK_TO_YOLOV8 = True
+        ai_pipeline.YOLOWorldDetector = BrokenYOLOWorldDetector
+        ai_pipeline.YOLOv8Detector = FakeYOLOv8Detector
+        get_detector.cache_clear()
+        assert get_detector().source == "yolov8"
+    finally:
+        ai_pipeline.DETECTOR_BACKEND = original_backend
+        ai_pipeline.FALLBACK_TO_YOLOV8 = original_fallback
+        ai_pipeline.YOLOWorldDetector = original_world_detector
+        ai_pipeline.YOLOv8Detector = original_yolov8_detector
+        get_detector.cache_clear()
+
+
+def test_detection_result_maps_to_internal_dict() -> None:
+    detection = DetectionResult(
+        box=[1.0, 2.0, 30.0, 40.0],
+        confidence=0.7,
+        class_id=3,
+        class_name="product",
+        source="yolo_world",
+        model="yolov8s-world.pt",
+        prompt="product",
+    )
+    payload = _detection_to_dict(detection)
+    assert payload["box"] == [1.0, 2.0, 30.0, 40.0]
+    assert payload["detector_backend"] == "yolo_world"
+    assert payload["detector_prompt"] == "product"
+
+
+def test_invalid_detection_boxes_are_filtered() -> None:
+    detections = [
+        DetectionResult(
+            box=[0.0, 0.0, 1.0, 1.0],
+            confidence=0.99,
+            class_id=None,
+            class_name=None,
+            source="yolo_world",
+            model="fake",
+        ),
+        DetectionResult(
+            box=[0.0, 0.0, 1000.0, 1000.0],
+            confidence=0.2,
+            class_id=None,
+            class_name=None,
+            source="yolo_world",
+            model="fake",
+        ),
+        DetectionResult(
+            box=[10.0, 10.0, 120.0, 120.0],
+            confidence=0.8,
+            class_id=None,
+            class_name=None,
+            source="yolo_world",
+            model="fake",
+        ),
+    ]
+    filtered = _filter_detection_results(detections, width=1000, height=1000)
+    assert len(filtered) == 1
+    assert filtered[0].box == [10.0, 10.0, 120.0, 120.0]
 
 
 def test_yolo_box_conversion() -> None:
@@ -334,6 +469,11 @@ if __name__ == "__main__":
     test_review_session_response_image_size_fields_exist()
     test_embedding_route_accepts_full_image_option()
     test_yolo_prediction_defaults_exist()
+    test_detector_factory_uses_yolov8_by_default()
+    test_detector_factory_can_select_yolo_world()
+    test_yolo_world_fallback_to_yolov8()
+    test_detection_result_maps_to_internal_dict()
+    test_invalid_detection_boxes_are_filtered()
     test_yolo_box_conversion()
     test_canvas_box_converts_to_original_coordinates()
     print("Smoke checks passed")
