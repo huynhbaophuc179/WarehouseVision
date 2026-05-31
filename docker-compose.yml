@@ -19,7 +19,7 @@ services:
     build: .
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/visual_inventory
-      DETECTOR_BACKEND: yolo11
+      DETECTOR_BACKEND: yolo26
       FALLBACK_TO_YOLOV8: "true"
       DETECTOR_RECOGNIZED_CONFIDENCE_THRESHOLD: "0.60"
       DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD: "0.45"
@@ -42,7 +42,7 @@ services:
       YOLO_CONFIDENCE_THRESHOLD: "0.25"
       YOLO_IOU_THRESHOLD: "0.45"
       YOLO_MAX_DETECTIONS: "20"
-      YOLO_MODEL_PATH: yolo11n.pt
+      YOLO_MODEL_PATH: yolo26n.pt
       YOLO_CLASSES: ""
       YOLO_WORLD_MODEL: yolov8s-world.pt
       YOLO_WORLD_PROMPTS: product,industrial component,electrical component,small box,package,button switch,relay,connector,pneumatic fitting,plastic wrapped product

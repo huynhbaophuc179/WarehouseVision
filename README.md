@@ -120,8 +120,8 @@ Example response:
     "box": [10.0, 20.0, 140.0, 180.0],
     "crop_preview_base64": "/9j/4AAQSkZJRgABAQ...",
     "detector_confidence": 0.87,
-    "detector_backend": "yolo11",
-    "detector_model": "yolo11n.pt",
+    "detector_backend": "yolo26",
+    "detector_model": "yolo26n.pt",
     "detector_prompt": "product",
     "detector_class_name": "product",
     "product_id": "CUP-001",
@@ -321,12 +321,12 @@ API service variables in `docker-compose.yml`:
 - `CATEGORY_MATCH_BONUS_MAX`: maximum positive final-score bonus from category metadata, default `0.03`.
 - `HIGH_CONFIDENCE_THRESHOLD`: minimum final score for `HIGH` confidence, default `0.85`.
 - `MEDIUM_CONFIDENCE_THRESHOLD`: minimum final score for `MEDIUM` confidence, default `0.70`.
-- `DETECTOR_BACKEND`: detector backend, default `yolo11` on this branch. Allowed values are `yolo11`, `yolov8`, and `yolo_world`.
+- `DETECTOR_BACKEND`: detector backend, default `yolo26` on this branch. Allowed values are `yolo26`, `yolo11`, `yolov8`, and `yolo_world`.
 - `FALLBACK_TO_YOLOV8`: when `true`, YOLO-World load/runtime failures fall back to the configured Ultralytics YOLO detector.
 - `YOLO_CONFIDENCE_THRESHOLD`: YOLO prediction confidence threshold, default `0.25`.
 - `YOLO_IOU_THRESHOLD`: YOLO NMS IoU threshold, default `0.45`.
 - `YOLO_MAX_DETECTIONS`: maximum YOLO detections per image, default `20`.
-- `YOLO_MODEL_PATH`: YOLO model path, default `yolo11n.pt`.
+- `YOLO_MODEL_PATH`: YOLO model path, default `yolo26n.pt`.
 - `YOLO_CLASSES`: comma-separated YOLO class IDs to detect. Use an empty value for the generic PoC so YOLO is not restricted to a few COCO classes.
 - `YOLO_WORLD_MODEL`: YOLO-World model path or Ultralytics weight name, default `yolov8s-world.pt`.
 - `YOLO_WORLD_PROMPTS`: comma-separated open-vocabulary prompts for YOLO-World.
@@ -346,7 +346,7 @@ API service variables in `docker-compose.yml`:
 - `MIN_CROP_AREA_RATIO`: minimum crop area relative to full image before recognition is attempted, default `0.001`.
 - `LOG_LEVEL`: Python logging level for the API, default `INFO`.
 
-For this generic PoC branch, keep `DETECTOR_BACKEND=yolo11`, `YOLO_MODEL_PATH=yolo11n.pt`, and `YOLO_CLASSES=""`. In production, train or provide a one-class YOLO model for `product` detection, then calibrate detection thresholds around real warehouse images.
+For this generic PoC branch, keep `DETECTOR_BACKEND=yolo26`, `YOLO_MODEL_PATH=yolo26n.pt`, and `YOLO_CLASSES=""`. In production, train or provide a one-class YOLO model for `product` detection, then calibrate detection thresholds around real warehouse images.
 
 ## Recognition Roadmap
 
@@ -360,7 +360,7 @@ OCR is intentionally a positive signal only. If OCR is disabled, fails, or retur
 
 ## Custom Product Detector
 
-The default `yolo11n.pt` model is only a placeholder trained on COCO classes. For multi-object warehouse scenes, train a custom one-class YOLO detector with class name `product`. This detector should only crop valid product regions; SKU identity remains CLIP embedding search against pgvector, not YOLO class prediction.
+The default `yolo26n.pt` model is only a placeholder trained on COCO classes. For multi-object warehouse scenes, train a custom one-class YOLO detector with class name `product`. This detector should only crop valid product regions; SKU identity remains CLIP embedding search against pgvector, not YOLO class prediction.
 
 After training, copy the weights to `./models/best.pt`, set `YOLO_MODEL_PATH=/models/best.pt`, and restart with Docker Compose. The API service mounts `./models` to `/models`. See `docs/detector_training.md` for dataset layout, annotation rules, and training commands.
 
@@ -371,8 +371,8 @@ Recognition thresholds must be calibrated with real product photos. A direct `re
 The detector backend can be switched without changing the rest of the pipeline:
 
 ```bash
-DETECTOR_BACKEND=yolo11
-YOLO_MODEL_PATH=yolo11n.pt
+DETECTOR_BACKEND=yolo26
+YOLO_MODEL_PATH=yolo26n.pt
 ```
 
 YOLO-World can be used for open-vocabulary PoC detection and pseudo-labeling before enough warehouse data exists for a custom one-class detector:
@@ -403,7 +403,7 @@ YOLO-World is not the long-term detector target. It is a bridge for open-vocabul
 custom YOLO 1-class product detector -> crop -> CLIP/OCR/vector search -> human confirmation
 ```
 
-In `Cài đặt`, the Streamlit app has a detector debug section and a `Run both detectors` comparison tool. It runs the current Ultralytics YOLO detector, YOLO11 by default on this branch, and YOLO-World on the same image, then shows detection counts, boxes, class names, prompts, and fallback status without changing normal recognition results.
+In `Cài đặt`, the Streamlit app has a detector debug section and a `Run both detectors` comparison tool. It runs the current Ultralytics YOLO detector, YOLO26 by default on this branch, and YOLO-World on the same image, then shows detection counts, boxes, class names, prompts, and fallback status without changing normal recognition results.
 
 ## Database Initialization
 
@@ -491,7 +491,7 @@ These checks do not run YOLO or CLIP inference.
 
 ## Known Limitations
 
-- The default `yolo11n.pt` model is trained on COCO classes, not industrial inventory parts.
+- The default `yolo26n.pt` model is trained on COCO classes, not industrial inventory parts.
 - Product registration embeds full images by default. If `REGISTRATION_USE_DETECTOR_CROP=true`, multiple detected boxes are rejected and zero boxes can fall back to full image.
 - Recognition uses threshold-based unknown handling and does not update inventory quantities without user confirmation.
 - Missing product boxes can be drawn on the source image in Streamlit, but full interactive editing/deleting of existing boxes is still a later improvement.

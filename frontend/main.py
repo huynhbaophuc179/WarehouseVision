@@ -1008,7 +1008,7 @@ def render_settings_page():
         summary_cols[1].metric(
             "YOLO model",
             detector_settings.get("yolo_model")
-            or detector_settings.get("yolo11_model")
+            or detector_settings.get("yolo26_model")
             or detector_settings.get("yolov8_model")
             or "-",
         )
@@ -1043,7 +1043,7 @@ def render_settings_page():
                     comparison = payload["comparison"]
                     detector_keys = [
                         key
-                        for key in ["yolo11", "yolov8", "yolo_world"]
+                        for key in ["yolo26", "yolov8", "yolo_world"]
                         if key in comparison
                     ]
                     cols = st.columns(len(detector_keys))
