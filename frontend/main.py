@@ -1005,7 +1005,13 @@ def render_settings_page():
             or detector_settings.get("detector_backend")
             or "-",
         )
-        summary_cols[1].metric("YOLOv8", detector_settings.get("yolov8_model", "-"))
+        summary_cols[1].metric(
+            "YOLO model",
+            detector_settings.get("yolo_model")
+            or detector_settings.get("yolo11_model")
+            or detector_settings.get("yolov8_model")
+            or "-",
+        )
         summary_cols[2].metric(
             "YOLO-World",
             detector_settings.get("yolo_world_model", "-"),
@@ -1019,7 +1025,7 @@ def render_settings_page():
 
     st.subheader("So sánh detector")
     compare_file = st.file_uploader(
-        "Chọn ảnh để so sánh YOLOv8 và YOLO-World",
+        "Chọn ảnh để so sánh YOLO hiện tại và YOLO-World",
         type=["jpg", "jpeg", "png"],
         key="detector_compare_file",
     )
@@ -1035,8 +1041,13 @@ def render_settings_page():
                 else:
                     payload = compare_response.json()
                     comparison = payload["comparison"]
-                    cols = st.columns(2)
-                    for col, key in zip(cols, ["yolov8", "yolo_world"]):
+                    detector_keys = [
+                        key
+                        for key in ["yolo11", "yolov8", "yolo_world"]
+                        if key in comparison
+                    ]
+                    cols = st.columns(len(detector_keys))
+                    for col, key in zip(cols, detector_keys):
                         section = comparison[key]
                         with col:
                             st.metric(
@@ -1046,7 +1057,7 @@ def render_settings_page():
                             if section.get("error"):
                                 st.warning(section["error"])
                             if section.get("fallback_used"):
-                                st.info("Đã fallback sang YOLOv8.")
+                                st.info("Đã fallback sang YOLO detector hiện tại.")
                             st.dataframe(
                                 [
                                     {

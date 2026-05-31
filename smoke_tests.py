@@ -303,21 +303,22 @@ def test_yolo_prediction_defaults_exist() -> None:
     assert MAX_DETECTIONS_PER_IMAGE >= 1
 
 
-def test_detector_factory_uses_yolov8_by_default() -> None:
+def test_detector_factory_uses_yolo11_by_default() -> None:
     original_backend = ai_pipeline.DETECTOR_BACKEND
     original_yolov8_detector = ai_pipeline.YOLOv8Detector
 
-    class FakeYOLOv8Detector:
-        source = "yolov8"
+    class FakeYOLODetector:
+        source = "yolo11"
 
-        def __init__(self):
-            self.model_name = "fake-yolov8"
+        def __init__(self, source: str = "yolo11"):
+            self.source = source
+            self.model_name = "fake-yolo11"
 
     try:
-        ai_pipeline.DETECTOR_BACKEND = "yolov8"
-        ai_pipeline.YOLOv8Detector = FakeYOLOv8Detector
+        ai_pipeline.DETECTOR_BACKEND = "yolo11"
+        ai_pipeline.YOLOv8Detector = FakeYOLODetector
         get_detector.cache_clear()
-        assert get_detector().source == "yolov8"
+        assert get_detector().source == "yolo11"
     finally:
         ai_pipeline.DETECTOR_BACKEND = original_backend
         ai_pipeline.YOLOv8Detector = original_yolov8_detector
@@ -355,19 +356,20 @@ def test_yolo_world_fallback_to_yolov8() -> None:
         def __init__(self):
             raise RuntimeError("missing model")
 
-    class FakeYOLOv8Detector:
-        source = "yolov8"
+    class FakeYOLODetector:
+        source = "yolo11"
 
-        def __init__(self):
-            self.model_name = "fake-yolov8"
+        def __init__(self, source: str = "yolo11"):
+            self.source = source
+            self.model_name = "fake-yolo11"
 
     try:
         ai_pipeline.DETECTOR_BACKEND = "yolo_world"
         ai_pipeline.FALLBACK_TO_YOLOV8 = True
         ai_pipeline.YOLOWorldDetector = BrokenYOLOWorldDetector
-        ai_pipeline.YOLOv8Detector = FakeYOLOv8Detector
+        ai_pipeline.YOLOv8Detector = FakeYOLODetector
         get_detector.cache_clear()
-        assert get_detector().source == "yolov8"
+        assert get_detector().source == "yolo11"
     finally:
         ai_pipeline.DETECTOR_BACKEND = original_backend
         ai_pipeline.FALLBACK_TO_YOLOV8 = original_fallback
@@ -469,7 +471,7 @@ if __name__ == "__main__":
     test_review_session_response_image_size_fields_exist()
     test_embedding_route_accepts_full_image_option()
     test_yolo_prediction_defaults_exist()
-    test_detector_factory_uses_yolov8_by_default()
+    test_detector_factory_uses_yolo11_by_default()
     test_detector_factory_can_select_yolo_world()
     test_yolo_world_fallback_to_yolov8()
     test_detection_result_maps_to_internal_dict()

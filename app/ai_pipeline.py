@@ -13,15 +13,16 @@ from ultralytics import YOLO
 logger = logging.getLogger(__name__)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-DETECTOR_BACKEND = os.getenv("DETECTOR_BACKEND", "yolov8").strip().lower()
-ALLOWED_DETECTOR_BACKENDS = {"yolov8", "yolo_world"}
+DETECTOR_BACKEND = os.getenv("DETECTOR_BACKEND", "yolo11").strip().lower()
+ULTRALYTICS_YOLO_BACKENDS = {"yolov8", "yolo11"}
+ALLOWED_DETECTOR_BACKENDS = {*ULTRALYTICS_YOLO_BACKENDS, "yolo_world"}
 FALLBACK_TO_YOLOV8 = os.getenv("FALLBACK_TO_YOLOV8", "true").strip().lower() in {
     "1",
     "true",
     "yes",
     "on",
 }
-YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "yolov8n.pt")
+YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "yolo11n.pt")
 CLIP_MODEL_NAME = os.getenv("CLIP_MODEL_NAME", "openai/clip-vit-base-patch32")
 YOLO_CONFIDENCE_THRESHOLD = float(os.getenv("YOLO_CONFIDENCE_THRESHOLD", "0.25"))
 YOLO_IOU_THRESHOLD = float(os.getenv("YOLO_IOU_THRESHOLD", "0.45"))
@@ -190,8 +191,9 @@ def _detections_from_ultralytics_result(
 class YOLOv8Detector(BaseDetector):
     source = "yolov8"
 
-    def __init__(self, model_path: str = YOLO_MODEL_PATH):
+    def __init__(self, model_path: str = YOLO_MODEL_PATH, source: str = "yolov8"):
         self.model_name = model_path
+        self.source = source
         self.model = YOLO(model_path)
 
     def detect(self, img: Image.Image) -> list[DetectionResult]:
@@ -268,11 +270,11 @@ def get_detector() -> BaseDetector:
             return YOLOWorldDetector()
         except Exception as exc:
             if FALLBACK_TO_YOLOV8:
-                logger.error("YOLO-World failed; falling back to YOLOv8: %s", exc)
-                return YOLOv8Detector()
+                logger.error("YOLO-World failed; falling back to YOLO detector: %s", exc)
+                return YOLOv8Detector(source="yolo11")
             raise
 
-    return YOLOv8Detector()
+    return YOLOv8Detector(source=DETECTOR_BACKEND)
 
 
 def get_detector_info() -> dict:
@@ -281,6 +283,8 @@ def get_detector_info() -> dict:
         "active_backend": DETECTOR_BACKEND,
         "note": "Fallback backend is resolved lazily during detection.",
         "fallback_to_yolov8": FALLBACK_TO_YOLOV8,
+        "yolo_model": YOLO_MODEL_PATH,
+        "yolo11_model": YOLO_MODEL_PATH if DETECTOR_BACKEND == "yolo11" else None,
         "yolov8_model": YOLO_MODEL_PATH,
         "yolov8_confidence": YOLO_CONFIDENCE_THRESHOLD,
         "yolov8_iou": YOLO_IOU_THRESHOLD,
@@ -383,10 +387,11 @@ def _detect_with_backend(img: Image.Image, detector: BaseDetector) -> list[dict]
 
 def compare_detectors(image_path: str) -> dict:
     img = Image.open(image_path).convert("RGB")
-    yolo_detections = _detect_with_backend(img, YOLOv8Detector())
+    yolo_backend = DETECTOR_BACKEND if DETECTOR_BACKEND in ULTRALYTICS_YOLO_BACKENDS else "yolo11"
+    yolo_detections = _detect_with_backend(img, YOLOv8Detector(source=yolo_backend))
     comparison = {
-        "yolov8": {
-            "backend": "yolov8",
+        yolo_backend: {
+            "backend": yolo_backend,
             "model": YOLO_MODEL_PATH,
             "detection_count": len(yolo_detections),
             "detections": yolo_detections,
