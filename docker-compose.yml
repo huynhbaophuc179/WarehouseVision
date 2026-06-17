@@ -19,6 +19,7 @@ services:
     build: .
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/visual_inventory
+      CORS_ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173,http://localhost:8501,http://127.0.0.1:8501
       DETECTOR_BACKEND: yolo26
       FALLBACK_TO_YOLOV8: "true"
       DETECTOR_RECOGNIZED_CONFIDENCE_THRESHOLD: "0.60"
@@ -39,10 +40,10 @@ services:
       CATEGORY_MATCH_BONUS_MAX: "0.03"
       HIGH_CONFIDENCE_THRESHOLD: "0.85"
       MEDIUM_CONFIDENCE_THRESHOLD: "0.70"
-      YOLO_CONFIDENCE_THRESHOLD: "0.25"
-      YOLO_IOU_THRESHOLD: "0.45"
+      YOLO_CONFIDENCE_THRESHOLD: "0.15"
+      YOLO_IOU_THRESHOLD: "0.30"
       YOLO_MAX_DETECTIONS: "20"
-      YOLO_MODEL_PATH: yolo26n.pt
+      YOLO_MODEL_PATH: /models/warehouse.pt
       YOLO_CLASSES: ""
       YOLO_WORLD_MODEL: yolov8s-world.pt
       YOLO_WORLD_PROMPTS: product,industrial component,electrical component,small box,package,button switch,relay,connector,pneumatic fitting,plastic wrapped product
@@ -50,12 +51,14 @@ services:
       YOLO_WORLD_IOU: "0.50"
       YOLO_WORLD_MAX_DETECTIONS: "30"
       MIN_DETECTION_AREA_RATIO: "0.002"
-      MAX_DETECTION_AREA_RATIO: "0.80"
+      MAX_DETECTION_AREA_RATIO: "0.95"
       MAX_DETECTIONS_PER_IMAGE: "30"
+      RECOGNITION_FALLBACK_TO_FULL_IMAGE: "false"
       CLIP_MODEL_NAME: openai/clip-vit-base-patch32
       RECOGNITION_CANDIDATE_LIMIT: "5"
       REVIEW_STORAGE_DIR: /data/reviews
       YOLO_DATASET_DIR: /code/data/yolo_dataset
+      PRODUCT_REFERENCE_DIR: /code/data/product_references
       MIN_CROP_DIMENSION_PX: "32"
       MIN_CROP_AREA_RATIO: "0.001"
       REGISTRATION_USE_DETECTOR_CROP: "false"

@@ -17,6 +17,7 @@ from io import BytesIO
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from PIL import Image
@@ -73,9 +74,10 @@ TEXT_CONFLICT_THRESHOLD = float(os.getenv("TEXT_CONFLICT_THRESHOLD", "0.15"))
 CATEGORY_MATCH_BONUS_MAX = float(os.getenv("CATEGORY_MATCH_BONUS_MAX", "0.03"))
 HIGH_CONFIDENCE_THRESHOLD = float(os.getenv("HIGH_CONFIDENCE_THRESHOLD", "0.85"))
 MEDIUM_CONFIDENCE_THRESHOLD = float(os.getenv("MEDIUM_CONFIDENCE_THRESHOLD", "0.70"))
-MODEL_VERSION = os.getenv("MODEL_VERSION", os.getenv("YOLO_MODEL_PATH", "yolo26n.pt"))
+MODEL_VERSION = os.getenv("MODEL_VERSION", os.getenv("YOLO_MODEL_PATH", "yolo26m.pt"))
 REVIEW_STORAGE_DIR = Path(os.getenv("REVIEW_STORAGE_DIR", "review_data"))
 YOLO_DATASET_DIR = Path(os.getenv("YOLO_DATASET_DIR", "data/yolo_dataset"))
+PRODUCT_REFERENCE_DIR = Path(os.getenv("PRODUCT_REFERENCE_DIR", "data/product_references"))
 APPROVED_EMBEDDING_STATUSES = {"approved", "auto_approved"}
 REFERENCE_QUALITY_STATUSES = {"pending", "approved", "auto_approved", "rejected"}
 REVIEW_DECISIONS = {
@@ -116,11 +118,46 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8501,http://127.0.0.1:8501",
+    ).split(",")
+    if origin.strip()
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 class ProductResponse(BaseModel):
     product_id: str
     name: str
     inventory_count: int
+
+
+class ProductManagementResponse(ProductResponse):
+    embedding_count: int = 0
+    approved_embedding_count: int = 0
+    pending_embedding_count: int = 0
+    reference_image_count: int = 0
+    thumbnail_base64: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ProductDeleteResponse(BaseModel):
+    product_id: str
+    deleted_embeddings: int
+    deleted_inventory_transactions: int
+    cleared_review_product_links: int
+    cleared_review_embedding_links: int
 
 
 class RecognizeResponse(ProductResponse):
@@ -151,6 +188,15 @@ class ProductEmbeddingResponse(BaseModel):
     image_path: str | None
     source: str
     quality_status: str
+
+
+class ProductEmbeddingDetailResponse(ProductEmbeddingResponse):
+    created_at: datetime | None = None
+    image_preview_base64: str | None = None
+
+
+class ProductDetailResponse(ProductManagementResponse):
+    embeddings: list[ProductEmbeddingDetailResponse] = Field(default_factory=list)
 
 
 class MultiRecognizeResponse(BaseModel):
@@ -268,6 +314,9 @@ class RecognitionSessionSummary(BaseModel):
     mode: str
     model_version: str | None
     created_at: datetime
+    detection_count: int = 0
+    reviewed_count: int = 0
+    pending_count: int = 0
 
 
 class RecognitionSessionDetail(RecognitionSessionSummary):
@@ -279,6 +328,13 @@ class RecognitionSessionDetail(RecognitionSessionSummary):
     preview_image_height: int | None
     preview_image_mime_type: str | None
     detections: list[DetectionReviewResponse]
+
+
+class RecognitionSessionDeleteResponse(BaseModel):
+    deleted: bool
+    session_id: int
+    detections_removed: int
+    artifacts_removed: dict
 
 
 class ProductEmbeddingQualityStatusRequest(BaseModel):
@@ -519,6 +575,223 @@ def save_yolo_annotation(
         "original_image_height": height,
         "normalized_yolo_box": metadata["normalized_yolo_box"],
     }
+
+
+def _label_line_from_annotation(annotation: dict) -> str | None:
+    yolo_box = annotation.get("normalized_yolo_box") or annotation.get("yolo_box")
+    if not yolo_box:
+        return None
+    try:
+        return "0 " + " ".join(
+            f"{float(yolo_box[field]):.6f}"
+            for field in ("x_center", "y_center", "width", "height")
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _metadata_references_label(
+    metadata_path: Path,
+    label_path: Path,
+    label_line: str,
+) -> bool:
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    metadata_label_path = metadata.get("saved_label_path") or metadata.get(
+        "saved_yolo_label_path"
+    )
+    if not metadata_label_path or Path(metadata_label_path) != label_path:
+        return False
+    return _label_line_from_annotation(metadata) == label_line
+
+
+def remove_manual_yolo_annotation(review: DetectionReview) -> dict:
+    removed = {
+        "crop_path": None,
+        "metadata_path": None,
+        "label_path": None,
+        "image_path": None,
+    }
+    metadata_path = YOLO_DATASET_DIR / "metadata" / (
+        f"session_{review.session_id}_review_{review.id}.json"
+    )
+    metadata = None
+    if metadata_path.exists():
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            metadata = None
+
+    if metadata:
+        label_path_value = metadata.get("saved_label_path") or metadata.get(
+            "saved_yolo_label_path"
+        )
+        label_path = Path(label_path_value) if label_path_value else None
+        label_line = _label_line_from_annotation(metadata)
+        if label_path and label_path.exists() and label_line:
+            sibling_metadata_paths = [
+                path
+                for path in metadata_path.parent.glob(
+                    f"session_{review.session_id}_review_*.json"
+                )
+                if path != metadata_path
+            ]
+            keep_label_line = any(
+                _metadata_references_label(path, label_path, label_line)
+                for path in sibling_metadata_paths
+            )
+            if not keep_label_line:
+                remaining_lines = [
+                    line
+                    for line in label_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip() and line.strip() != label_line
+                ]
+                if remaining_lines:
+                    label_path.write_text(
+                        "\n".join(remaining_lines) + "\n",
+                        encoding="utf-8",
+                    )
+                else:
+                    label_path.unlink()
+                removed["label_path"] = str(label_path)
+
+        image_path_value = metadata.get("saved_image_path") or metadata.get(
+            "saved_dataset_image_path"
+        )
+        image_path = Path(image_path_value) if image_path_value else None
+        if image_path and image_path.exists() and label_path and not label_path.exists():
+            has_other_session_metadata = any(
+                path != metadata_path
+                for path in metadata_path.parent.glob(
+                    f"session_{review.session_id}_review_*.json"
+                )
+            )
+            if not has_other_session_metadata:
+                image_path.unlink()
+                removed["image_path"] = str(image_path)
+
+        metadata_path.unlink(missing_ok=True)
+        removed["metadata_path"] = str(metadata_path)
+
+    if review.crop_path and os.path.exists(review.crop_path):
+        os.remove(review.crop_path)
+        removed["crop_path"] = review.crop_path
+
+    return removed
+
+
+def _unlink_path(path: Path) -> bool:
+    try:
+        if path.exists():
+            path.unlink()
+            return True
+    except OSError:
+        logger.warning("Could not delete artifact: %s", path)
+    return False
+
+
+def _remove_yolo_session_artifacts(session_id: int) -> dict:
+    dataset_dir = _ensure_yolo_dataset_dirs()
+    removed = {
+        "metadata_paths": [],
+        "label_paths": [],
+        "image_paths": [],
+        "pending_review_paths": [],
+    }
+    label_lines_by_path: dict[Path, set[str]] = {}
+    image_paths_by_label_path: dict[Path, set[Path]] = {}
+
+    metadata_dirs = [
+        (dataset_dir / "metadata", "metadata_paths"),
+        (dataset_dir / "pending_review", "pending_review_paths"),
+    ]
+    for metadata_dir, removed_key in metadata_dirs:
+        for metadata_path in metadata_dir.glob(f"session_{session_id}_review_*.json"):
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                metadata = {}
+
+            label_path_value = metadata.get("saved_label_path") or metadata.get(
+                "saved_yolo_label_path"
+            )
+            label_line = _label_line_from_annotation(metadata)
+            if label_path_value and label_line:
+                label_path = Path(label_path_value)
+                label_lines_by_path.setdefault(label_path, set()).add(label_line)
+                image_path_value = metadata.get("saved_image_path") or metadata.get(
+                    "saved_dataset_image_path"
+                )
+                if image_path_value:
+                    image_paths_by_label_path.setdefault(label_path, set()).add(
+                        Path(image_path_value)
+                    )
+
+            if _unlink_path(metadata_path):
+                removed[removed_key].append(str(metadata_path))
+
+    for label_path, label_lines in label_lines_by_path.items():
+        if not label_path.exists():
+            continue
+        remaining_lines = [
+            line
+            for line in label_path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and line.strip() not in label_lines
+        ]
+        if remaining_lines:
+            label_path.write_text("\n".join(remaining_lines) + "\n", encoding="utf-8")
+        elif _unlink_path(label_path):
+            removed["label_paths"].append(str(label_path))
+            for image_path in image_paths_by_label_path.get(label_path, set()):
+                if _unlink_path(image_path):
+                    removed["image_paths"].append(str(image_path))
+
+    for split in ("train", "val"):
+        label_path = dataset_dir / "labels" / split / f"session_{session_id}.txt"
+        if _unlink_path(label_path):
+            removed["label_paths"].append(str(label_path))
+        for image_path in (dataset_dir / "images" / split).glob(f"session_{session_id}.*"):
+            if _unlink_path(image_path):
+                removed["image_paths"].append(str(image_path))
+
+    return removed
+
+
+def remove_recognition_session_artifacts(
+    db: Session,
+    session: RecognitionSession,
+) -> dict:
+    removed = {
+        "original_image_path": None,
+        "crop_paths": [],
+        "preserved_reference_crop_paths": [],
+        "training_data": _remove_yolo_session_artifacts(session.id),
+    }
+
+    for review in list(session.detections):
+        if not review.crop_path:
+            continue
+        is_reference_image = (
+            db.query(ProductEmbedding.id)
+            .filter(ProductEmbedding.image_path == review.crop_path)
+            .first()
+            is not None
+        )
+        if is_reference_image:
+            removed["preserved_reference_crop_paths"].append(review.crop_path)
+            continue
+        crop_path = Path(review.crop_path)
+        if _unlink_path(crop_path):
+            removed["crop_paths"].append(str(crop_path))
+
+    if session.original_image_path:
+        original_path = Path(session.original_image_path)
+        if _unlink_path(original_path):
+            removed["original_image_path"] = str(original_path)
+
+    return removed
 
 
 def save_correction_event_metadata(
@@ -896,6 +1169,105 @@ def _embedding_review_response(
             product_embedding.image_path,
             max_size=(256, 256),
         ),
+    )
+
+
+def _safe_path_segment(value: str) -> str:
+    safe_value = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
+    return safe_value or "product"
+
+
+def _save_product_reference_image(product_id: str, source_path: str) -> str:
+    product_dir = PRODUCT_REFERENCE_DIR / _safe_path_segment(product_id)
+    product_dir.mkdir(parents=True, exist_ok=True)
+    image_path = product_dir / f"{uuid.uuid4().hex}.jpg"
+    Image.open(source_path).convert("RGB").save(image_path, format="JPEG", quality=92)
+    return str(image_path)
+
+
+def _product_embedding_response(
+    product_embedding: ProductEmbedding,
+    preview_size: tuple[int, int] = (192, 192),
+) -> ProductEmbeddingDetailResponse:
+    return ProductEmbeddingDetailResponse(
+        id=product_embedding.id,
+        product_id=product_embedding.product_id,
+        view_label=product_embedding.view_label,
+        image_path=product_embedding.image_path,
+        source=product_embedding.source,
+        quality_status=product_embedding.quality_status,
+        created_at=product_embedding.created_at,
+        image_preview_base64=_image_to_base64(
+            product_embedding.image_path,
+            max_size=preview_size,
+        ),
+    )
+
+
+def _latest_review_crop_for_product(
+    product_id: str,
+    db: Session,
+    *,
+    confirmed_only: bool,
+) -> str | None:
+    product_column = (
+        DetectionReview.confirmed_product_id
+        if confirmed_only
+        else DetectionReview.predicted_product_id
+    )
+    query = (
+        db.query(DetectionReview.crop_path)
+        .filter(product_column == product_id)
+        .filter(DetectionReview.crop_path.isnot(None))
+        .order_by(DetectionReview.created_at.desc(), DetectionReview.id.desc())
+    )
+    for (crop_path,) in query.all():
+        if crop_path and os.path.exists(crop_path):
+            return crop_path
+    return None
+
+
+def _product_summary_response(product: Product, db: Session) -> ProductManagementResponse:
+    embeddings = (
+        db.query(ProductEmbedding)
+        .filter(ProductEmbedding.product_id == product.product_id)
+        .order_by(ProductEmbedding.created_at.desc(), ProductEmbedding.id.desc())
+        .all()
+    )
+    thumbnail_embedding = next(
+        (embedding for embedding in embeddings if embedding.image_path),
+        None,
+    )
+    thumbnail_path = (
+        thumbnail_embedding.image_path
+        if thumbnail_embedding is not None
+        else _latest_review_crop_for_product(product.product_id, db, confirmed_only=True)
+    )
+    if thumbnail_path is None:
+        thumbnail_path = _latest_review_crop_for_product(
+            product.product_id,
+            db,
+            confirmed_only=False,
+        )
+
+    return ProductManagementResponse(
+        product_id=product.product_id,
+        name=product.name,
+        inventory_count=product.inventory_count or 0,
+        embedding_count=len(embeddings),
+        approved_embedding_count=sum(
+            1 for embedding in embeddings if embedding.quality_status in APPROVED_EMBEDDING_STATUSES
+        ),
+        pending_embedding_count=sum(
+            1 for embedding in embeddings if embedding.quality_status == "pending"
+        ),
+        reference_image_count=sum(1 for embedding in embeddings if embedding.image_path),
+        thumbnail_base64=_image_to_base64(
+            thumbnail_path,
+            max_size=(96, 96),
+        ),
+        created_at=product.created_at,
+        updated_at=product.updated_at,
     )
 
 
@@ -1322,7 +1694,7 @@ def health_check():
     return {"status": "ok"}
 
 
-@app.get("/api/v1/products", response_model=list[ProductResponse])
+@app.get("/api/v1/products", response_model=list[ProductManagementResponse])
 def list_products(
     search: str | None = Query(None),
     limit: int = Query(100, ge=1, le=500),
@@ -1336,14 +1708,38 @@ def list_products(
         )
 
     products = query.order_by(Product.product_id).limit(limit).all()
-    return [
-        ProductResponse(
-            product_id=product.product_id,
-            name=product.name,
-            inventory_count=product.inventory_count or 0,
-        )
-        for product in products
-    ]
+    return [_product_summary_response(product, db) for product in products]
+
+
+@app.get("/api/v1/products/{product_id}", response_model=ProductDetailResponse)
+def get_product_detail(product_id: str, db: Session = Depends(get_db)):
+    product = db.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    embeddings = (
+        db.query(ProductEmbedding)
+        .filter(ProductEmbedding.product_id == product.product_id)
+        .order_by(ProductEmbedding.created_at.desc(), ProductEmbedding.id.desc())
+        .all()
+    )
+    summary = _product_summary_response(product, db)
+    return ProductDetailResponse(
+        product_id=summary.product_id,
+        name=summary.name,
+        inventory_count=summary.inventory_count,
+        embedding_count=summary.embedding_count,
+        approved_embedding_count=summary.approved_embedding_count,
+        pending_embedding_count=summary.pending_embedding_count,
+        reference_image_count=summary.reference_image_count,
+        thumbnail_base64=summary.thumbnail_base64,
+        created_at=summary.created_at,
+        updated_at=summary.updated_at,
+        embeddings=[
+            _product_embedding_response(product_embedding)
+            for product_embedding in embeddings
+        ],
+    )
 
 
 @app.post("/api/v1/products", response_model=ProductResponse, status_code=201)
@@ -1373,10 +1769,12 @@ async def upsert_product(
         product.name = name
         product.inventory_count = inventory_count
         db.flush()
+        reference_image_path = _save_product_reference_image(product.product_id, temp_path)
         db.add(
             ProductEmbedding(
                 product_id=product.product_id,
                 embedding=embedding,
+                image_path=reference_image_path,
                 view_label=view_label,
                 source="manual_upload",
                 quality_status="approved",
@@ -1397,6 +1795,60 @@ async def upsert_product(
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
+
+@app.delete("/api/v1/products/{product_id}", response_model=ProductDeleteResponse)
+def delete_product(product_id: str, db: Session = Depends(get_db)):
+    product = db.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    embedding_ids = [
+        row[0]
+        for row in db.query(ProductEmbedding.id)
+        .filter(ProductEmbedding.product_id == product_id)
+        .all()
+    ]
+    deleted_embeddings = len(embedding_ids)
+    deleted_inventory_transactions = (
+        db.query(InventoryTransaction)
+        .filter(InventoryTransaction.product_id == product_id)
+        .delete(synchronize_session=False)
+    )
+    cleared_review_product_links = 0
+    cleared_review_embedding_links = 0
+
+    review_product_refs = db.query(DetectionReview).filter(
+        (DetectionReview.predicted_product_id == product_id)
+        | (DetectionReview.confirmed_product_id == product_id)
+    )
+    for review in review_product_refs.all():
+        if review.predicted_product_id == product_id:
+            review.predicted_product_id = None
+            cleared_review_product_links += 1
+        if review.confirmed_product_id == product_id:
+            review.confirmed_product_id = None
+            cleared_review_product_links += 1
+
+    if embedding_ids:
+        review_embedding_refs = db.query(DetectionReview).filter(
+            DetectionReview.matched_embedding_id.in_(embedding_ids)
+        )
+        for review in review_embedding_refs.all():
+            review.matched_embedding_id = None
+            review.matched_view_label = None
+            cleared_review_embedding_links += 1
+
+    db.delete(product)
+    db.commit()
+
+    return ProductDeleteResponse(
+        product_id=product_id,
+        deleted_embeddings=deleted_embeddings,
+        deleted_inventory_transactions=deleted_inventory_transactions,
+        cleared_review_product_links=cleared_review_product_links,
+        cleared_review_embedding_links=cleared_review_embedding_links,
+    )
 
 
 @app.post(
@@ -1432,6 +1884,7 @@ async def add_product_embedding(
         product_embedding = ProductEmbedding(
             product_id=product.product_id,
             embedding=embedding,
+            image_path=_save_product_reference_image(product.product_id, temp_path),
             view_label=view_label,
             source="manual_upload",
             quality_status="approved",
@@ -1783,7 +2236,7 @@ async def detector_compare(file: UploadFile = File(...)):
 
 @app.get("/api/v1/review/sessions", response_model=list[RecognitionSessionSummary])
 def list_review_sessions(
-    limit: int = Query(25, ge=1, le=100),
+    limit: int | None = Query(None, ge=1, le=5000),
     mode: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
@@ -1791,7 +2244,10 @@ def list_review_sessions(
     if mode:
         query = query.filter(RecognitionSession.mode == mode)
 
-    sessions = query.order_by(RecognitionSession.created_at.desc()).limit(limit).all()
+    query = query.order_by(RecognitionSession.created_at.desc())
+    if limit is not None:
+        query = query.limit(limit)
+    sessions = query.all()
     return [
         RecognitionSessionSummary(
             id=session.id,
@@ -1800,6 +2256,22 @@ def list_review_sessions(
             mode=session.mode,
             model_version=session.model_version,
             created_at=session.created_at,
+            detection_count=len(session.detections),
+            reviewed_count=len(
+                [
+                    detection
+                    for detection in session.detections
+                    if detection.user_decision
+                    not in {"ignored", "needs_review"}
+                ]
+            ),
+            pending_count=len(
+                [
+                    detection
+                    for detection in session.detections
+                    if detection.user_decision in {"ignored", "needs_review"}
+                ]
+            ),
         )
         for session in sessions
     ]
@@ -1830,6 +2302,21 @@ def get_review_session(session_id: int, db: Session = Depends(get_db)):
         mode=session.mode,
         model_version=session.model_version,
         created_at=session.created_at,
+        detection_count=len(detections),
+        reviewed_count=len(
+            [
+                detection
+                for detection in detections
+                if detection.user_decision not in {"ignored", "needs_review"}
+            ]
+        ),
+        pending_count=len(
+            [
+                detection
+                for detection in detections
+                if detection.user_decision in {"ignored", "needs_review"}
+            ]
+        ),
         original_image_base64=preview_base64,
         original_image_width=original_width,
         original_image_height=original_height,
@@ -1838,6 +2325,35 @@ def get_review_session(session_id: int, db: Session = Depends(get_db)):
         preview_image_height=preview_height,
         preview_image_mime_type="image/jpeg" if preview_base64 else None,
         detections=[_review_response(review) for review in detections],
+    )
+
+
+@app.delete(
+    "/api/v1/review/sessions/{session_id}",
+    response_model=RecognitionSessionDeleteResponse,
+)
+def delete_review_session(
+    session_id: int,
+    delete_training_data: bool = Query(True),
+    db: Session = Depends(get_db),
+):
+    session = db.get(RecognitionSession, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Recognition session not found")
+
+    detections_removed = len(session.detections)
+    artifacts_removed = (
+        remove_recognition_session_artifacts(db, session)
+        if delete_training_data
+        else {}
+    )
+    db.delete(session)
+    db.commit()
+    return RecognitionSessionDeleteResponse(
+        deleted=True,
+        session_id=session_id,
+        detections_removed=detections_removed,
+        artifacts_removed=artifacts_removed,
     )
 
 
@@ -2067,6 +2583,33 @@ def add_manual_detection(
     db.commit()
     db.refresh(review)
     return _review_response(review, yolo_annotation=yolo_annotation)
+
+
+@app.delete("/api/v1/review/detections/{review_id}")
+def delete_manual_detection_review(
+    review_id: int,
+    db: Session = Depends(get_db),
+):
+    review = db.get(DetectionReview, review_id)
+    if review is None:
+        raise HTTPException(status_code=404, detail="Detection review not found")
+    if review.user_decision != "manually_added":
+        raise HTTPException(
+            status_code=400,
+            detail="Only manually added detections can be deleted",
+        )
+
+    session = review.session
+    removed_artifacts = remove_manual_yolo_annotation(review)
+    db.delete(review)
+    if session is not None:
+        _update_session_status(db, session)
+    db.commit()
+    return {
+        "deleted": True,
+        "review_id": review_id,
+        "removed_artifacts": removed_artifacts,
+    }
 
 
 @app.get(

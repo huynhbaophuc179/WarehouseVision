@@ -121,7 +121,7 @@ Example response:
     "crop_preview_base64": "/9j/4AAQSkZJRgABAQ...",
     "detector_confidence": 0.87,
     "detector_backend": "yolo26",
-    "detector_model": "yolo26n.pt",
+    "detector_model": "yolo26m.pt",
     "detector_prompt": "product",
     "detector_class_name": "product",
     "product_id": "CUP-001",
@@ -323,10 +323,10 @@ API service variables in `docker-compose.yml`:
 - `MEDIUM_CONFIDENCE_THRESHOLD`: minimum final score for `MEDIUM` confidence, default `0.70`.
 - `DETECTOR_BACKEND`: detector backend, default `yolo26` on this branch. Allowed values are `yolo26`, `yolo11`, `yolov8`, and `yolo_world`.
 - `FALLBACK_TO_YOLOV8`: when `true`, YOLO-World load/runtime failures fall back to the configured Ultralytics YOLO detector.
-- `YOLO_CONFIDENCE_THRESHOLD`: YOLO prediction confidence threshold, default `0.25`.
-- `YOLO_IOU_THRESHOLD`: YOLO NMS IoU threshold, default `0.45`.
+- `YOLO_CONFIDENCE_THRESHOLD`: YOLO prediction confidence threshold, fixed at `0.15` for the standard YOLO26 medium detector.
+- `YOLO_IOU_THRESHOLD`: YOLO NMS IoU threshold, fixed at `0.30` for clustered product scenes.
 - `YOLO_MAX_DETECTIONS`: maximum YOLO detections per image, default `20`.
-- `YOLO_MODEL_PATH`: YOLO model path, default `yolo26n.pt`.
+- `YOLO_MODEL_PATH`: YOLO model path, default `yolo26m.pt`.
 - `YOLO_CLASSES`: comma-separated YOLO class IDs to detect. Use an empty value for the generic PoC so YOLO is not restricted to a few COCO classes.
 - `YOLO_WORLD_MODEL`: YOLO-World model path or Ultralytics weight name, default `yolov8s-world.pt`.
 - `YOLO_WORLD_PROMPTS`: comma-separated open-vocabulary prompts for YOLO-World.
@@ -334,8 +334,9 @@ API service variables in `docker-compose.yml`:
 - `YOLO_WORLD_IOU`: YOLO-World NMS IoU threshold, default `0.50`.
 - `YOLO_WORLD_MAX_DETECTIONS`: maximum raw YOLO-World detections per image, default `30`.
 - `MIN_DETECTION_AREA_RATIO`: minimum detector box area relative to the full image, default `0.002`.
-- `MAX_DETECTION_AREA_RATIO`: maximum detector box area relative to the full image unless confidence is very high, default `0.80`.
+- `MAX_DETECTION_AREA_RATIO`: maximum detector box area relative to the full image, default `0.95`. Boxes above this ratio are always rejected because warehouse scans are expected to contain multiple product objects, not one detector box covering nearly the whole image.
 - `MAX_DETECTIONS_PER_IMAGE`: post-filter maximum detector boxes per image, default `30`.
+- `RECOGNITION_FALLBACK_TO_FULL_IMAGE`: when `false`, `/api/v1/recognize` returns no detections instead of drawing one full-image box if the detector finds nothing. Default `false` for multi-object warehouse scanning.
 - `CLIP_MODEL_NAME`: Hugging Face CLIP model name, default `openai/clip-vit-base-patch32`.
 - `RECOGNITION_CANDIDATE_LIMIT`: backward-compatible alias for candidate count. Prefer `TOP_K_CANDIDATES`; Docker defaults both to `5`.
 - `REVIEW_STORAGE_DIR`: directory for recognition session images and detection crops. Docker sets this to `/data/reviews`; local runs default to `review_data`.
@@ -346,7 +347,7 @@ API service variables in `docker-compose.yml`:
 - `MIN_CROP_AREA_RATIO`: minimum crop area relative to full image before recognition is attempted, default `0.001`.
 - `LOG_LEVEL`: Python logging level for the API, default `INFO`.
 
-For this generic PoC branch, keep `DETECTOR_BACKEND=yolo26`, `YOLO_MODEL_PATH=yolo26n.pt`, and `YOLO_CLASSES=""`. In production, train or provide a one-class YOLO model for `product` detection, then calibrate detection thresholds around real warehouse images.
+For this generic PoC branch, keep `DETECTOR_BACKEND=yolo26`, `YOLO_MODEL_PATH=yolo26m.pt`, and `YOLO_CLASSES=""`. In production, train or provide a one-class YOLO model for `product` detection, then calibrate detection thresholds around real warehouse images.
 
 ## Recognition Roadmap
 
@@ -360,7 +361,7 @@ OCR is intentionally a positive signal only. If OCR is disabled, fails, or retur
 
 ## Custom Product Detector
 
-The default `yolo26n.pt` model is only a placeholder trained on COCO classes. For multi-object warehouse scenes, train a custom one-class YOLO detector with class name `product`. This detector should only crop valid product regions; SKU identity remains CLIP embedding search against pgvector, not YOLO class prediction.
+The default `yolo26m.pt` model is a standard YOLO26 object detection model used here only to produce product boxes. For multi-object warehouse scenes, train a custom one-class YOLO detector with class name `product`. This detector should only crop valid product regions; SKU identity remains CLIP embedding search against pgvector, not YOLO class prediction.
 
 After training, copy the weights to `./models/best.pt`, set `YOLO_MODEL_PATH=/models/best.pt`, and restart with Docker Compose. The API service mounts `./models` to `/models`. See `docs/detector_training.md` for dataset layout, annotation rules, and training commands.
 
@@ -372,7 +373,7 @@ The detector backend can be switched without changing the rest of the pipeline:
 
 ```bash
 DETECTOR_BACKEND=yolo26
-YOLO_MODEL_PATH=yolo26n.pt
+YOLO_MODEL_PATH=yolo26m.pt
 ```
 
 YOLO-World can be used for open-vocabulary PoC detection and pseudo-labeling before enough warehouse data exists for a custom one-class detector:
@@ -403,7 +404,7 @@ YOLO-World is not the long-term detector target. It is a bridge for open-vocabul
 custom YOLO 1-class product detector -> crop -> CLIP/OCR/vector search -> human confirmation
 ```
 
-In `Cài đặt`, the Streamlit app has a detector debug section and a `Run both detectors` comparison tool. It runs the current Ultralytics YOLO detector, YOLO26 by default on this branch, and YOLO-World on the same image, then shows detection counts, boxes, class names, prompts, and fallback status without changing normal recognition results.
+In `Cài đặt`, the Streamlit app has a detector debug section and a `Run both detectors` comparison tool. It runs the current Ultralytics YOLO detector, YOLO26 medium by default on this branch, and YOLO-World on the same image, then shows detection counts, boxes, class names, prompts, and fallback status without changing normal recognition results.
 
 ## Database Initialization
 
@@ -491,7 +492,7 @@ These checks do not run YOLO or CLIP inference.
 
 ## Known Limitations
 
-- The default `yolo26n.pt` model is trained on COCO classes, not industrial inventory parts.
+- The default `yolo26m.pt` model is trained on generic object detection data, not industrial inventory parts.
 - Product registration embeds full images by default. If `REGISTRATION_USE_DETECTOR_CROP=true`, multiple detected boxes are rejected and zero boxes can fall back to full image.
 - Recognition uses threshold-based unknown handling and does not update inventory quantities without user confirmation.
 - Missing product boxes can be drawn on the source image in Streamlit, but full interactive editing/deleting of existing boxes is still a later improvement.

@@ -1,0 +1,83 @@
+# macOS / editor
+.DS_Store
+._*
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+venv_yolo/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+pip-wheel-metadata/
+
+# Node / Vite
+node_modules/
+dist/
+dist-ssr/
+coverage/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+tailwind.config.js
+tailwind.config.d.ts
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Docker / local runtime
+docker-compose.override.yml
+*.local.yml
+
+# Logs / temp files
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+
+# AI model weights and generated ML outputs
+*.pt
+*.pth
+*.onnx
+*.engine
+*.mlmodel
+runs/
+wandb/
+mlruns/
+.ultralytics/
+
+# Generated warehouse/review datasets
+data/*
+!data/.gitignore
+datasets/*
+!datasets/.gitignore
+models/*
+!models/.gitignore
+review_data/*
+!review_data/.gitignore
+
+# Local caches
+.cache/
+.ipynb_checkpoints/

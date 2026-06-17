@@ -22,10 +22,11 @@ FALLBACK_TO_YOLOV8 = os.getenv("FALLBACK_TO_YOLOV8", "true").strip().lower() in 
     "yes",
     "on",
 }
-YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "yolo26n.pt")
+YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "yolo26m.pt")
 CLIP_MODEL_NAME = os.getenv("CLIP_MODEL_NAME", "openai/clip-vit-base-patch32")
-YOLO_CONFIDENCE_THRESHOLD = float(os.getenv("YOLO_CONFIDENCE_THRESHOLD", "0.25"))
-YOLO_IOU_THRESHOLD = float(os.getenv("YOLO_IOU_THRESHOLD", "0.45"))
+YOLO_IMAGE_SIZE = 1024
+YOLO_CONFIDENCE_THRESHOLD = 0.15
+YOLO_IOU_THRESHOLD = 0.30
 YOLO_MAX_DETECTIONS = int(os.getenv("YOLO_MAX_DETECTIONS", "20"))
 YOLO_WORLD_MODEL = os.getenv("YOLO_WORLD_MODEL", "yolov8s-world.pt")
 YOLO_WORLD_CONFIDENCE = float(os.getenv("YOLO_WORLD_CONFIDENCE", "0.20"))
@@ -64,9 +65,12 @@ YOLO_WORLD_PROMPT_PRESET = os.getenv("YOLO_WORLD_PROMPT_PRESET", "").strip()
 MIN_CROP_DIMENSION_PX = int(os.getenv("MIN_CROP_DIMENSION_PX", "32"))
 MIN_CROP_AREA_RATIO = float(os.getenv("MIN_CROP_AREA_RATIO", "0.001"))
 MIN_DETECTION_AREA_RATIO = float(os.getenv("MIN_DETECTION_AREA_RATIO", "0.002"))
-MAX_DETECTION_AREA_RATIO = float(os.getenv("MAX_DETECTION_AREA_RATIO", "0.80"))
+MAX_DETECTION_AREA_RATIO = float(os.getenv("MAX_DETECTION_AREA_RATIO", "0.95"))
 MAX_DETECTIONS_PER_IMAGE = int(os.getenv("MAX_DETECTIONS_PER_IMAGE", "30"))
-FULL_IMAGE_BOX_CONFIDENCE = float(os.getenv("FULL_IMAGE_BOX_CONFIDENCE", "0.95"))
+RECOGNITION_FALLBACK_TO_FULL_IMAGE = os.getenv(
+    "RECOGNITION_FALLBACK_TO_FULL_IMAGE",
+    "false",
+).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -138,12 +142,15 @@ def _detections_from_ultralytics_result(
     height: int,
     prompt_labels: list[str] | None = None,
 ) -> list[DetectionResult]:
-    if result is None or len(result.boxes) == 0:
+    result_boxes = getattr(result, "boxes", None) if result is not None else None
+    if result_boxes is None or len(result_boxes) == 0:
         return []
 
-    result_boxes = result.boxes
     names = _result_names(result)
-    boxes = result_boxes.xyxy.tolist()
+    xyxy = getattr(result_boxes, "xyxy", None)
+    if xyxy is None:
+        return []
+    boxes = xyxy.tolist()
     confidences = (
         result_boxes.conf.tolist()
         if getattr(result_boxes, "conf", None) is not None
@@ -199,9 +206,11 @@ class YOLOv8Detector(BaseDetector):
     def detect(self, img: Image.Image) -> list[DetectionResult]:
         results = self.model.predict(
             img,
+            imgsz=YOLO_IMAGE_SIZE,
             classes=_parse_yolo_classes(),
             conf=YOLO_CONFIDENCE_THRESHOLD,
             iou=YOLO_IOU_THRESHOLD,
+            agnostic_nms=True,
             max_det=min(YOLO_MAX_DETECTIONS, MAX_DETECTIONS_PER_IMAGE),
             verbose=False,
         )
@@ -286,8 +295,10 @@ def get_detector_info() -> dict:
         "yolo_model": YOLO_MODEL_PATH,
         "yolo26_model": YOLO_MODEL_PATH if DETECTOR_BACKEND == "yolo26" else None,
         "yolov8_model": YOLO_MODEL_PATH,
+        "yolo_imgsz": YOLO_IMAGE_SIZE,
         "yolov8_confidence": YOLO_CONFIDENCE_THRESHOLD,
         "yolov8_iou": YOLO_IOU_THRESHOLD,
+        "yolo_agnostic_nms": True,
         "yolov8_max_detections": YOLO_MAX_DETECTIONS,
         "yolo_world_model": YOLO_WORLD_MODEL,
         "yolo_world_prompts": _parse_yolo_world_prompts(),
@@ -297,6 +308,7 @@ def get_detector_info() -> dict:
         "min_detection_area_ratio": MIN_DETECTION_AREA_RATIO,
         "max_detection_area_ratio": MAX_DETECTION_AREA_RATIO,
         "max_detections_per_image": MAX_DETECTIONS_PER_IMAGE,
+        "recognition_fallback_to_full_image": RECOGNITION_FALLBACK_TO_FULL_IMAGE,
     }
 
 
@@ -335,10 +347,9 @@ def _filter_detection_results(
             continue
 
         area_ratio = _box_area_ratio(detection.box, width, height)
-        confidence = detection.confidence if detection.confidence is not None else 0.0
         if area_ratio < MIN_DETECTION_AREA_RATIO:
             continue
-        if area_ratio > MAX_DETECTION_AREA_RATIO and confidence < FULL_IMAGE_BOX_CONFIDENCE:
+        if area_ratio > MAX_DETECTION_AREA_RATIO:
             continue
 
         filtered.append(detection)
@@ -359,17 +370,23 @@ def _detection_to_dict(detection: DetectionResult) -> dict:
     }
 
 
-def _detect_detections(img: Image.Image) -> list[dict]:
+def _detect_detections_with_filter_info(img: Image.Image) -> tuple[list[dict], int]:
     width, height = img.size
-    detections = get_detector().detect(img)
-    return [
+    raw_detections = get_detector().detect(img)
+    filtered_detections = [
         _detection_to_dict(detection)
         for detection in _filter_detection_results(
-            detections,
+            raw_detections,
             width=width,
             height=height,
         )
     ]
+    return filtered_detections, len(raw_detections)
+
+
+def _detect_detections(img: Image.Image) -> list[dict]:
+    detections, _ = _detect_detections_with_filter_info(img)
+    return detections
 
 
 def _detect_with_backend(img: Image.Image, detector: BaseDetector) -> list[dict]:
@@ -519,9 +536,13 @@ def process_registration_image(image_path: str) -> list[float]:
 def process_multiple_images(image_path: str) -> list[dict]:
     img = Image.open(image_path).convert("RGB")
     width, height = img.size
-    detections = _detect_detections(img)
+    detections, raw_detection_count = _detect_detections_with_filter_info(img)
 
-    if not detections:
+    if (
+        not detections
+        and raw_detection_count == 0
+        and RECOGNITION_FALLBACK_TO_FULL_IMAGE
+    ):
         detections = [
             {
                 "box": [0.0, 0.0, float(width), float(height)],
@@ -533,6 +554,9 @@ def process_multiple_images(image_path: str) -> list[dict]:
                 "detector_prompt": "full_image_fallback",
             }
         ]
+
+    if not detections:
+        return []
 
     boxes = [detection["box"] for detection in detections]
     crops = _crop_images(img, boxes)

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import app.ai_pipeline as ai_pipeline
+from PIL import Image
 from app.api import (
     CandidateResponse,
     ENABLE_OCR,
@@ -20,10 +21,13 @@ from app.api import (
 )
 from app.ai_pipeline import (
     DetectionResult,
+    MAX_DETECTION_AREA_RATIO,
     MAX_DETECTIONS_PER_IMAGE,
+    RECOGNITION_FALLBACK_TO_FULL_IMAGE,
     _detection_to_dict,
     _filter_detection_results,
     get_detector,
+    YOLO_IMAGE_SIZE,
     YOLO_CONFIDENCE_THRESHOLD,
     YOLO_IOU_THRESHOLD,
     YOLO_MAX_DETECTIONS,
@@ -49,6 +53,8 @@ def test_custom_box_canvas_component_exists() -> None:
     assert "displayed_box" in content
     assert "image_mime_type" in content
     assert "existing_boxes" in content
+    assert "reset_token" in content
+    assert "lastResetToken" in content
 
 
 def test_drawable_canvas_dependency_removed() -> None:
@@ -62,6 +68,7 @@ def test_required_routes_exist() -> None:
     required_paths = {
         "/health",
         "/api/v1/products",
+        "/api/v1/products/{product_id}",
         "/api/v1/products/{product_id}/embeddings",
         "/api/v1/recognize",
         "/api/v1/recognize/candidates",
@@ -89,6 +96,36 @@ def test_product_list_route_exists() -> None:
         if route.path == "/api/v1/products" and "GET" in getattr(route, "methods", set())
     ]
     assert matching_routes, "Missing GET /api/v1/products route"
+
+
+def test_product_delete_route_exists() -> None:
+    matching_routes = [
+        route
+        for route in app.routes
+        if route.path == "/api/v1/products/{product_id}"
+        and "DELETE" in getattr(route, "methods", set())
+    ]
+    assert matching_routes, "Missing DELETE /api/v1/products/{product_id} route"
+
+
+def test_manual_detection_delete_route_exists() -> None:
+    matching_routes = [
+        route
+        for route in app.routes
+        if route.path == "/api/v1/review/detections/{review_id}"
+        and "DELETE" in getattr(route, "methods", set())
+    ]
+    assert matching_routes, "Missing DELETE /api/v1/review/detections/{review_id} route"
+
+
+def test_review_session_delete_route_exists() -> None:
+    matching_routes = [
+        route
+        for route in app.routes
+        if route.path == "/api/v1/review/sessions/{session_id}"
+        and "DELETE" in getattr(route, "methods", set())
+    ]
+    assert matching_routes, "Missing DELETE /api/v1/review/sessions/{session_id} route"
 
 
 def test_manual_detection_accepts_external_product_id() -> None:
@@ -297,10 +334,30 @@ def test_embedding_route_accepts_full_image_option() -> None:
 
 
 def test_yolo_prediction_defaults_exist() -> None:
+    assert YOLO_IMAGE_SIZE == 1024
+    assert YOLO_CONFIDENCE_THRESHOLD == 0.15
+    assert YOLO_IOU_THRESHOLD == 0.30
+    assert MAX_DETECTION_AREA_RATIO == 0.95
+    assert RECOGNITION_FALLBACK_TO_FULL_IMAGE is False
     assert 0.0 <= YOLO_CONFIDENCE_THRESHOLD <= 1.0
     assert 0.0 <= YOLO_IOU_THRESHOLD <= 1.0
     assert YOLO_MAX_DETECTIONS >= 1
     assert MAX_DETECTIONS_PER_IMAGE >= 1
+
+
+def test_recognition_does_not_full_image_fallback_by_default() -> None:
+    original_detector = ai_pipeline._detect_detections_with_filter_info
+    original_flag = ai_pipeline.RECOGNITION_FALLBACK_TO_FULL_IMAGE
+    image_path = Path("/tmp/warehousevision_no_fallback_smoke.jpg")
+    Image.new("RGB", (64, 64), "white").save(image_path)
+    try:
+        ai_pipeline._detect_detections_with_filter_info = lambda image: ([], 0)
+        ai_pipeline.RECOGNITION_FALLBACK_TO_FULL_IMAGE = False
+        assert ai_pipeline.process_multiple_images(str(image_path)) == []
+    finally:
+        ai_pipeline._detect_detections_with_filter_info = original_detector
+        ai_pipeline.RECOGNITION_FALLBACK_TO_FULL_IMAGE = original_flag
+        image_path.unlink(missing_ok=True)
 
 
 def test_detector_factory_uses_yolo26_by_default() -> None:
@@ -312,7 +369,7 @@ def test_detector_factory_uses_yolo26_by_default() -> None:
 
         def __init__(self, source: str = "yolo26"):
             self.source = source
-            self.model_name = "fake-yolo26"
+            self.model_name = "fake-yolo26m"
 
     try:
         ai_pipeline.DETECTOR_BACKEND = "yolo26"
@@ -361,7 +418,7 @@ def test_yolo_world_fallback_to_yolov8() -> None:
 
         def __init__(self, source: str = "yolo26"):
             self.source = source
-            self.model_name = "fake-yolo26"
+            self.model_name = "fake-yolo26m"
 
     try:
         ai_pipeline.DETECTOR_BACKEND = "yolo_world"
@@ -407,6 +464,14 @@ def test_invalid_detection_boxes_are_filtered() -> None:
         DetectionResult(
             box=[0.0, 0.0, 1000.0, 1000.0],
             confidence=0.2,
+            class_id=None,
+            class_name=None,
+            source="yolo_world",
+            model="fake",
+        ),
+        DetectionResult(
+            box=[0.0, 0.0, 980.0, 980.0],
+            confidence=0.99,
             class_id=None,
             class_name=None,
             source="yolo_world",
@@ -471,6 +536,7 @@ if __name__ == "__main__":
     test_review_session_response_image_size_fields_exist()
     test_embedding_route_accepts_full_image_option()
     test_yolo_prediction_defaults_exist()
+    test_recognition_does_not_full_image_fallback_by_default()
     test_detector_factory_uses_yolo26_by_default()
     test_detector_factory_can_select_yolo_world()
     test_yolo_world_fallback_to_yolov8()

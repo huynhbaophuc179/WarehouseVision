@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="vi">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -20,7 +20,6 @@
       canvas {
         display: block;
         max-width: 100%;
-        height: auto;
         border: 1px solid rgba(148, 163, 184, 0.9);
         box-sizing: border-box;
         cursor: crosshair;
@@ -74,11 +73,11 @@
       <div class="legend">
         <span class="legend-item">
           <span class="legend-swatch existing-swatch"></span>
-          Box AI đã nhận diện
+          Vùng AI đã nhận diện
         </span>
         <span class="legend-item">
           <span class="legend-swatch missing-swatch"></span>
-          Box người dùng thêm
+          Vùng người dùng thêm
         </span>
       </div>
     </div>
@@ -132,6 +131,9 @@
       let currentBox = null;
       let existingBoxes = [];
       let selectionCounter = 0;
+      let initialized = false;
+      let lastResetToken = null;
+      let lastImageSignature = null;
 
       function safeMimeType(value) {
         const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -335,14 +337,21 @@
         const initialBox = Array.isArray(args.initial_box) ? args.initial_box : null;
         const imageBase64 = args.image_base64 || "";
         const mimeType = safeMimeType(args.image_mime_type || "image/jpeg");
+        const resetToken = String(args.reset_token || "0");
+        const imageSignature = `${mimeType}:${imageBase64.length}:${width}x${height}`;
         existingBoxes = Array.isArray(args.existing_boxes) ? args.existing_boxes : [];
 
         canvas.width = width;
         canvas.height = height;
         canvas.style.width = `${width}px`;
-        canvas.style.height = "auto";
+        canvas.style.height = `${height}px`;
 
-        currentBox = initialBox ? normalizeBox(initialBox) : currentBox;
+        if (!initialized || resetToken !== lastResetToken || imageSignature !== lastImageSignature) {
+          currentBox = initialBox ? normalizeBox(initialBox) : null;
+          initialized = true;
+          lastResetToken = resetToken;
+          lastImageSignature = imageSignature;
+        }
         imageLoaded = false;
         imageError = null;
         hint.textContent = "Đang tải ảnh vào canvas...";
@@ -352,14 +361,14 @@
           imageLoaded = true;
           imageError = null;
           hint.textContent =
-            "Ảnh đã tải. Kéo chuột để vẽ một box, vẽ lại để thay box hiện tại.";
+            "Ảnh đã tải. Kéo chuột để vẽ một vùng, vẽ lại để thay vùng hiện tại.";
           redraw();
           Streamlit.setFrameHeight(document.body.scrollHeight + 4);
         };
         image.onerror = () => {
           imageLoaded = false;
           imageError = "Không tải được ảnh nền.";
-          hint.textContent = "Không tải được ảnh nền. Hãy thử refresh session.";
+          hint.textContent = "Không tải được ảnh nền. Hãy thử tải lại phiên.";
           redraw();
           Streamlit.setFrameHeight(document.body.scrollHeight + 4);
         };
