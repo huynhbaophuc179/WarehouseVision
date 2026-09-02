@@ -1,4 +1,4 @@
-import type { DetectionDecision, RecognitionStatus } from "@/types/api";
+import type { ConfidenceLevel, DetectionDecision, RecognitionStatus } from "@/types/api";
 
 export const formatPercent = (value?: number | null): string => {
   if (value === null || value === undefined || Number.isNaN(value)) {
@@ -22,6 +22,19 @@ export const statusLabel = (status: RecognitionStatus): string => {
     return "Cần kiểm tra";
   }
   return "Chưa xác định";
+};
+
+export const confidenceLevelLabel = (level?: ConfidenceLevel | null): string => {
+  if (level === "HIGH") {
+    return "Cao";
+  }
+  if (level === "MEDIUM") {
+    return "Trung bình";
+  }
+  if (level === "LOW") {
+    return "Thấp";
+  }
+  return "Không đủ dữ liệu";
 };
 
 export const decisionLabel = (decision: DetectionDecision): string => {

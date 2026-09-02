@@ -1,1 +1,1 @@
-export type DashboardView = "scanner" | "products" | "review" | "missing-box";
+export type DashboardView = "scanner" | "products" | "categories" | "review" | "missing-box";

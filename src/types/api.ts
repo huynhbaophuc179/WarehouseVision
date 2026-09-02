@@ -9,6 +9,7 @@ export type DetectionDecision = "accepted" | "rejected" | "unknown" | "review" |
 export interface Product {
   product_id: string;
   name: string;
+  category?: string | null;
   inventory_count: number;
   embedding_count?: number;
   approved_embedding_count?: number;
@@ -30,8 +31,41 @@ export interface ProductEmbedding {
   image_preview_base64?: string | null;
 }
 
+export interface ProductReferenceCapture extends ProductEmbedding {
+  detected_box: number[];
+  crop_preview_base64: string;
+  reference_image_count: number;
+}
+
 export interface ProductDetail extends Product {
   embeddings: ProductEmbedding[];
+}
+
+export interface ProductCategory {
+  id: number;
+  name: string;
+  product_count: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ProductCategoryListResponse {
+  categories: ProductCategory[];
+  unclassified_product_count: number;
+}
+
+export interface ProductCategoryDeleteResponse {
+  id: number;
+  name: string;
+  cleared_product_count: number;
+}
+
+export interface ProductEmbeddingDeleteResponse {
+  id: number;
+  product_id: string;
+  deleted_image: boolean;
+  reference_image_count: number;
+  cleared_review_embedding_links: number;
 }
 
 export interface ProductDeleteResponse {
@@ -40,6 +74,27 @@ export interface ProductDeleteResponse {
   deleted_inventory_transactions: number;
   cleared_review_product_links: number;
   cleared_review_embedding_links: number;
+}
+
+export interface ProductBatchImportRow {
+  row_index: number;
+  ma_san_pham: string | null;
+  ten_san_pham: string | null;
+  nhom_mat_hang: string | null;
+  status: "created" | "updated" | "failed" | string;
+  message: string;
+  matched_images: string[];
+  embedding_count: number;
+}
+
+export interface ProductBatchImportResponse {
+  total_rows: number;
+  created_count: number;
+  updated_count: number;
+  failed_count: number;
+  missing_image_count: number;
+  embedding_count: number;
+  rows: ProductBatchImportRow[];
 }
 
 export interface DetectionReviewResponse {
@@ -143,6 +198,7 @@ export interface DetectionResult {
   detection_id: string;
   box: number[];
   crop_preview_base64?: string | null;
+  reference_image_base64?: string | null;
   detector_confidence?: number | null;
   detector_backend?: string | null;
   detector_model?: string | null;
@@ -191,15 +247,23 @@ export interface InventoryConfirmRequest {
 }
 
 export interface InventoryConfirmResponse {
-  confirmed_items: Record<string, unknown>[];
-  rejected_items: Record<string, unknown>[];
+  confirmed_items: InventoryConfirmedResult[];
+  rejected_items: RejectedInventoryItem[];
+}
+
+export interface InventoryConfirmedResult {
+  detection_id: string;
+  product_id: string;
+  action: InventoryAction;
+  quantity: number;
+  quantity_delta: number;
+  inventory_count: number;
+  transaction_id: number;
 }
 
 export interface ScannerSettings {
   apiBaseUrl: string;
   confidenceThreshold: number;
-  iouThreshold: number;
-  modelName: string;
   topK: number;
 }
 

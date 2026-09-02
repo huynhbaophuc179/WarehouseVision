@@ -1,10 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, CheckCircle2, Loader2, Search, Trash2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, Loader2, Trash2 } from "lucide-react";
 import * as React from "react";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MissingBoxCanvas, type DisplayBox, type ExistingDisplayBox } from "@/components/MissingBoxCanvas";
 import {
@@ -160,9 +158,7 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
   const [selectedSessionId, setSelectedSessionId] = React.useState<number | null>(null);
   const [selectedBox, setSelectedBox] = React.useState<DisplayBox | null>(null);
   const [cropPreviewUrl, setCropPreviewUrl] = React.useState<string | null>(null);
-  const [productSearch, setProductSearch] = React.useState("");
   const [selectedProductId, setSelectedProductId] = React.useState("");
-  const [externalProductId, setExternalProductId] = React.useState("");
   const [statusMessage, setStatusMessage] = React.useState<string | null>(null);
 
   const sessionsQuery = useQuery<RecognitionSessionSummary[], Error>({
@@ -185,8 +181,8 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
   });
 
   const productsQuery = useQuery<Product[], Error>({
-    queryKey: ["products", apiBaseUrl, productSearch],
-    queryFn: () => fetchProducts(apiBaseUrl, productSearch, 100),
+    queryKey: ["products", apiBaseUrl],
+    queryFn: () => fetchProducts(apiBaseUrl, "", 200),
     staleTime: 30_000,
   });
 
@@ -200,7 +196,7 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
     onSuccess: async () => {
       setSelectedBox(null);
       setCropPreviewUrl(null);
-      setStatusMessage("Đã lưu vùng vào dữ liệu huấn luyện AI.");
+      setStatusMessage("Đã lưu vùng.");
       await queryClient.invalidateQueries({ queryKey: ["review-session", apiBaseUrl, selectedSessionId] });
     },
   });
@@ -239,7 +235,6 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
     setSelectedBox(null);
     setCropPreviewUrl(null);
     setSelectedProductId("");
-    setExternalProductId("");
     setStatusMessage(null);
   }, [selectedSessionId]);
 
@@ -277,7 +272,7 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
     addMutation.mutate({
       corrected_box: correctedBox,
       confirmed_product_id: selectedProductId || null,
-      external_product_id: externalProductId.trim() || null,
+      external_product_id: null,
       user_decision: "manually_added",
       displayed_box: [selectedBox.x1, selectedBox.y1, selectedBox.x2, selectedBox.y2],
       display_size: [displaySize.width, displaySize.height],
@@ -286,25 +281,18 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
   };
 
   return (
-    <section className="space-y-4 pb-6">
-      <div className="grid gap-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm md:grid-cols-[minmax(0,1fr)_420px] md:items-center">
-        <div className="min-w-0">
-          <h2 className="text-2xl font-semibold tracking-tight text-slate-950">Vẽ vùng sản phẩm bị thiếu</h2>
-          <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-500">
-            Chọn phiên nhận diện, kéo chuột trực tiếp trên ảnh rồi lưu vùng còn thiếu vào dữ liệu huấn luyện AI.
-          </p>
-        </div>
-        <div className="w-full">
-          <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-            Phiên nhận diện
-          </label>
+    <section className="space-y-3 pb-6">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm text-slate-600">Kéo quanh sản phẩm bị bỏ sót.</p>
+        <div className="w-full max-w-sm">
           {sessionsQuery.isLoading ? (
             <Skeleton className="h-10 w-full" />
           ) : (
             <select
               value={selectedSessionId ?? ""}
               onChange={(event) => setSelectedSessionId(Number(event.target.value))}
-              className="h-12 w-full rounded-lg border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-900 outline-none focus:ring-2 focus:ring-slate-400"
+              aria-label="Chọn phiên"
+              className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-900 outline-none focus:ring-2 focus:ring-slate-400"
             >
               {sessionsQuery.data?.map((sessionItem) => (
                 <option key={sessionItem.id} value={sessionItem.id}>
@@ -324,15 +312,11 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
 
       <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
         <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="mb-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div>
-              <h3 className="text-base font-semibold text-slate-950">Ảnh cần bổ sung vùng</h3>
-              <p className="text-sm text-slate-500">Kéo một vùng quanh sản phẩm mà AI còn bỏ sót.</p>
-            </div>
+          <div className="mb-3 flex items-center justify-end">
             <div className="flex shrink-0 items-center gap-3 text-xs text-slate-500">
               <span className="inline-flex items-center gap-1">
                 <span className="h-3 w-5 rounded-sm border-2 border-dashed border-blue-600" />
-                AI đã nhận diện
+                Hệ thống đã nhận diện
               </span>
               <span className="inline-flex items-center gap-1">
                 <span className="h-3 w-5 rounded-sm border-2 border-emerald-600" />
@@ -380,9 +364,6 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
                   ) : (
                     <Skeleton className="h-40 w-full" />
                   )}
-                  <div className="rounded-md bg-slate-50 p-3 text-xs text-slate-600">
-                    Tọa độ ảnh gốc: {correctedBox?.map((value) => Math.round(value)).join(", ")}
-                  </div>
                   {validationMessage && (
                     <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
                       <AlertCircle className="h-4 w-4 shrink-0" />
@@ -390,36 +371,19 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
                     </div>
                   )}
                   <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-700">Gán sản phẩm có sẵn</label>
-                    <div className="relative">
-                      <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-                      <Input
-                        value={productSearch}
-                        onChange={(event) => setProductSearch(event.target.value)}
-                        placeholder="Tìm mã hoặc tên sản phẩm"
-                        className="pl-9"
-                      />
-                    </div>
+                    <label className="text-sm font-medium text-slate-700">Gán mã hàng</label>
                     <select
                       value={selectedProductId}
                       onChange={(event) => setSelectedProductId(event.target.value)}
                       className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none focus:ring-2 focus:ring-slate-400"
                     >
-                      <option value="">Không gán sản phẩm</option>
+                      <option value="">Chưa xác định</option>
                       {productsQuery.data?.map((product) => (
                         <option key={product.product_id} value={product.product_id}>
                           {product.product_id} · {product.name}
                         </option>
                       ))}
                     </select>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-700">Mã ngoài hệ thống</label>
-                    <Input
-                      value={externalProductId}
-                      onChange={(event) => setExternalProductId(event.target.value)}
-                      placeholder="Nhập nếu chưa có SKU trong hệ thống"
-                    />
                   </div>
                   <Button
                     type="button"
@@ -428,7 +392,7 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
                     onClick={handleSave}
                   >
                     {addMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-                    Lưu vùng vừa chọn
+                    Lưu vùng
                   </Button>
                 </>
               )}
@@ -449,12 +413,8 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
       </div>
 
       <Card className="min-h-0">
-        <CardHeader className="flex-row items-center justify-between pb-3">
-          <div>
-            <CardTitle>Vùng đã lưu</CardTitle>
-            <p className="mt-1 text-sm text-slate-500">Các vùng người dùng đã bổ sung cho phiên đang chọn.</p>
-          </div>
-          <Badge variant="secondary">{savedBoxes.length} vùng</Badge>
+        <CardHeader className="pb-3">
+          <CardTitle>Vùng đã lưu ({savedBoxes.length})</CardTitle>
         </CardHeader>
         <CardContent>
           {savedBoxes.length === 0 ? (
@@ -464,7 +424,7 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
           ) : (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               {savedBoxes.map((detection) => {
-                const title = detection.confirmed_product_id || detection.predicted_product_id || `Vùng #${detection.detection_index}`;
+                const title = detection.confirmed_product_id || `Vùng #${detection.detection_index}`;
                 return (
                   <div
                     key={detection.id}

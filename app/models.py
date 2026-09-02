@@ -5,11 +5,26 @@ from pgvector.sqlalchemy import Vector
 Base = declarative_base()
 
 
+class ProductCategory(Base):
+    __tablename__ = "product_categories"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), nullable=False, unique=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class Product(Base):
     __tablename__ = "products"
 
     product_id = Column(String(50), primary_key=True)
     name = Column(String(255), nullable=False)
+    category = Column(String(255), nullable=True, index=True)
     inventory_count = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(

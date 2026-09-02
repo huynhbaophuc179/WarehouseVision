@@ -27,21 +27,20 @@ export const ImageOverlay = ({
 
   if (!imageUrl) {
     return (
-      <div className="flex min-h-[520px] items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50">
+      <div className="flex h-full min-h-72 items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50">
         <div className="text-center text-slate-500">
           <ImageOff className="mx-auto h-10 w-10" />
-          <p className="mt-3 text-sm font-medium">Chưa có ảnh để scan</p>
-          <p className="text-xs">Tải ảnh hoặc chụp ảnh sản phẩm để bắt đầu.</p>
+          <p className="mt-3 text-sm font-medium">Chưa có ảnh</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-slate-950">
+    <div className="relative overflow-hidden rounded-lg bg-white">
       <img
         src={imageUrl}
-        alt="Ảnh scan sản phẩm"
+        alt="Ảnh sản phẩm"
         className="block w-full select-none"
         draggable={false}
         onLoad={onImageLoad}

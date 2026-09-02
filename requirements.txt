@@ -7,3 +7,5 @@ pgvector==0.4.2
 ultralytics==8.4.46
 transformers==5.7.0
 Pillow==12.2.0
+openpyxl==3.1.5
+xlrd==2.0.1

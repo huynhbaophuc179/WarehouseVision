@@ -3,7 +3,9 @@ from pathlib import Path
 import app.ai_pipeline as ai_pipeline
 from PIL import Image
 from app.api import (
+    AUTO_ACCEPT_SCORE_THRESHOLD,
     CandidateResponse,
+    ConfirmedInventoryItem,
     ENABLE_OCR,
     HIGH_CONFIDENCE_THRESHOLD,
     IMAGE_SIMILARITY_WEIGHT,
@@ -14,7 +16,9 @@ from app.api import (
     TEXT_MATCH_WEIGHT,
     TOP_K_CANDIDATES,
     _final_score,
+    _duplicate_confirmed_product_ids,
     _has_text_conflict,
+    _parse_product_import_file,
     app,
     convert_box_to_yolo,
     convert_display_box_to_original,
@@ -35,32 +39,18 @@ from app.ai_pipeline import (
 from app.models import (
     DetectionReview,
     InventoryTransaction,
+    Product,
+    ProductCategory,
     ProductEmbedding,
     RecognitionSession,
 )
 from scripts.export_yolo_dataset import POSITIVE_DECISIONS
 
 
-def test_custom_box_canvas_component_exists() -> None:
-    component_path = Path("frontend/box_canvas_component/index.html")
-    if not component_path.exists():
-        return
-
-    with component_path.open(encoding="utf-8") as component:
-        content = component.read()
-    assert "Streamlit.setComponentValue" in content
-    assert "selection_id" in content
-    assert "displayed_box" in content
-    assert "image_mime_type" in content
-    assert "existing_boxes" in content
-    assert "reset_token" in content
-    assert "lastResetToken" in content
-
-
-def test_drawable_canvas_dependency_removed() -> None:
+def test_streamlit_dependency_removed() -> None:
     with open("requirements.txt", encoding="utf-8") as requirements:
         content = requirements.read()
-    assert "streamlit-drawable-canvas" not in content
+    assert "streamlit" not in content.lower()
 
 
 def test_required_routes_exist() -> None:
@@ -68,8 +58,13 @@ def test_required_routes_exist() -> None:
     required_paths = {
         "/health",
         "/api/v1/products",
+        "/api/v1/product-categories",
+        "/api/v1/product-categories/{category_id}",
+        "/api/v1/products/batch-import",
         "/api/v1/products/{product_id}",
         "/api/v1/products/{product_id}/embeddings",
+        "/api/v1/products/{product_id}/embeddings/{embedding_id}",
+        "/api/v1/products/{product_id}/capture-reference",
         "/api/v1/recognize",
         "/api/v1/recognize/candidates",
         "/api/v1/detector/settings",
@@ -98,6 +93,27 @@ def test_product_list_route_exists() -> None:
     assert matching_routes, "Missing GET /api/v1/products route"
 
 
+def test_product_category_model_exists() -> None:
+    assert ProductCategory.__tablename__ == "product_categories"
+    assert ProductCategory.name.property.columns[0].unique is True
+
+
+def test_product_category_routes_exist() -> None:
+    expected_methods = {
+        ("/api/v1/product-categories", "GET"),
+        ("/api/v1/product-categories", "POST"),
+        ("/api/v1/product-categories/{category_id}", "PATCH"),
+        ("/api/v1/product-categories/{category_id}", "DELETE"),
+    }
+    actual_methods = {
+        (route.path, method)
+        for route in app.routes
+        for method in getattr(route, "methods", set())
+    }
+    missing_methods = expected_methods - actual_methods
+    assert not missing_methods, f"Missing product category routes: {sorted(missing_methods)}"
+
+
 def test_product_delete_route_exists() -> None:
     matching_routes = [
         route
@@ -106,6 +122,47 @@ def test_product_delete_route_exists() -> None:
         and "DELETE" in getattr(route, "methods", set())
     ]
     assert matching_routes, "Missing DELETE /api/v1/products/{product_id} route"
+
+
+def test_product_metadata_update_route_exists() -> None:
+    matching_routes = [
+        route
+        for route in app.routes
+        if route.path == "/api/v1/products/{product_id}"
+        and "PATCH" in getattr(route, "methods", set())
+    ]
+    assert matching_routes, "Missing PATCH /api/v1/products/{product_id} route"
+
+
+def test_product_embedding_delete_route_exists() -> None:
+    matching_routes = [
+        route
+        for route in app.routes
+        if route.path == "/api/v1/products/{product_id}/embeddings/{embedding_id}"
+        and "DELETE" in getattr(route, "methods", set())
+    ]
+    assert matching_routes, "Missing DELETE product embedding route"
+
+
+def test_product_batch_import_route_exists() -> None:
+    matching_routes = [
+        route
+        for route in app.routes
+        if route.path == "/api/v1/products/batch-import"
+        and "POST" in getattr(route, "methods", set())
+    ]
+    assert matching_routes, "Missing POST /api/v1/products/batch-import route"
+
+
+def test_product_can_be_created_without_image() -> None:
+    route = next(
+        route
+        for route in app.routes
+        if route.path == "/api/v1/products"
+        and "POST" in getattr(route, "methods", set())
+    )
+    file_param = next(param for param in route.dependant.body_params if param.name == "file")
+    assert file_param.default is None
 
 
 def test_manual_detection_delete_route_exists() -> None:
@@ -136,18 +193,22 @@ def test_manual_detection_accepts_external_product_id() -> None:
     assert "external_product_id" in fields
 
 
-def test_missing_box_ui_hides_yolo_copy() -> None:
-    main_path = Path("frontend/main.py")
-    if not main_path.exists():
-        return
-
-    content = main_path.read_text(encoding="utf-8")
-    assert "YOLO label" not in content
-    assert "YOLO training data" not in content
-
-
 def test_product_embedding_model_exists() -> None:
     assert ProductEmbedding.__tablename__ == "product_embeddings"
+
+
+def test_product_category_model_exists() -> None:
+    assert "category" in Product.__table__.c
+
+
+def test_product_import_reads_vietnamese_category() -> None:
+    rows = _parse_product_import_file(
+        "ma_san_pham,ten_san_pham,nhom_mat_hang\nINOXTL1M,Thước lá inox,thước lá\n".encode(),
+        "danh_sach.csv",
+    )
+    assert rows[0]["row_index"] == 1
+    assert rows[0]["product_id"] == "INOXTL1M"
+    assert rows[0]["category"] == "thước lá"
 
 
 def test_product_embedding_dimension() -> None:
@@ -163,6 +224,26 @@ def test_product_embedding_review_metadata_exists() -> None:
 
 def test_inventory_transaction_model_exists() -> None:
     assert InventoryTransaction.__tablename__ == "inventory_transactions"
+
+
+def test_inventory_confirmation_rejects_duplicate_product_ids() -> None:
+    duplicates = _duplicate_confirmed_product_ids(
+        [
+            ConfirmedInventoryItem(
+                detection_id="det_1",
+                product_id="SKU_01",
+                quantity=1,
+                action="stock_in",
+            ),
+            ConfirmedInventoryItem(
+                detection_id="det_2",
+                product_id="SKU_01",
+                quantity=3,
+                action="stock_in",
+            ),
+        ]
+    )
+    assert duplicates == ["SKU_01"]
 
 
 def test_review_models_exist() -> None:
@@ -263,6 +344,7 @@ def test_candidate_phase2_fields_exist() -> None:
 
 def test_phase2_config_defaults_are_safe() -> None:
     assert TOP_K_CANDIDATES == 5
+    assert AUTO_ACCEPT_SCORE_THRESHOLD == 0.75
     assert ENABLE_OCR is False
     assert 0.0 <= IMAGE_SIMILARITY_WEIGHT <= 1.0
     assert 0.0 <= TEXT_MATCH_WEIGHT <= 1.0
@@ -302,6 +384,7 @@ def test_recognize_route_accepts_top_k_form_field() -> None:
     route = next(route for route in app.routes if route.path == "/api/v1/recognize")
     body_param_names = {param.name for param in route.dependant.body_params}
     assert "top_k" in body_param_names
+    assert "auto_accept_score_threshold" in body_param_names
 
 
 def test_review_session_response_image_size_fields_exist() -> None:
@@ -518,12 +601,18 @@ if __name__ == "__main__":
     test_drawable_canvas_dependency_removed()
     test_required_routes_exist()
     test_product_list_route_exists()
+    test_product_category_model_exists()
+    test_product_category_routes_exist()
+    test_product_metadata_update_route_exists()
+    test_product_batch_import_route_exists()
+    test_product_can_be_created_without_image()
     test_manual_detection_accepts_external_product_id()
     test_missing_box_ui_hides_yolo_copy()
     test_product_embedding_model_exists()
     test_product_embedding_dimension()
     test_product_embedding_review_metadata_exists()
     test_inventory_transaction_model_exists()
+    test_inventory_confirmation_rejects_duplicate_product_ids()
     test_review_models_exist()
     test_detection_review_feedback_fields_exist()
     test_detection_review_model_can_be_created()

@@ -75,6 +75,7 @@ datasets/*
 !datasets/.gitignore
 models/*
 !models/.gitignore
+!models/warehouse.pt
 review_data/*
 !review_data/.gitignore
 

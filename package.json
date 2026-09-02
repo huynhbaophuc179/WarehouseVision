@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "test:grouping": "node --test src/lib/inventoryGrouping.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {

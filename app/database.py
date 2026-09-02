@@ -25,6 +25,22 @@ ALTER TABLE products
 ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 """
 
+PRODUCT_CATEGORY_MIGRATION_SQL = """
+ALTER TABLE products
+ADD COLUMN IF NOT EXISTS category VARCHAR(255);
+
+CREATE INDEX IF NOT EXISTS ix_products_category ON products (category);
+"""
+
+PRODUCT_CATEGORY_SEED_SQL = """
+INSERT INTO product_categories (name)
+SELECT DISTINCT BTRIM(category)
+FROM products
+WHERE category IS NOT NULL
+  AND BTRIM(category) <> ''
+ON CONFLICT (name) DO NOTHING;
+"""
+
 PRODUCT_EMBEDDING_METADATA_MIGRATION_SQL = """
 ALTER TABLE product_embeddings
 ADD COLUMN IF NOT EXISTS source VARCHAR(50) NOT NULL DEFAULT 'manual_upload';
@@ -71,6 +87,8 @@ def init_db() -> None:
 
     with engine.begin() as connection:
         connection.execute(text(PRODUCT_TIMESTAMP_MIGRATION_SQL))
+        connection.execute(text(PRODUCT_CATEGORY_MIGRATION_SQL))
+        connection.execute(text(PRODUCT_CATEGORY_SEED_SQL))
         connection.execute(text(PRODUCT_EMBEDDING_METADATA_MIGRATION_SQL))
         connection.execute(text(LEGACY_EMBEDDING_MIGRATION_SQL))
         connection.execute(text(HNSW_COSINE_INDEX_SQL))

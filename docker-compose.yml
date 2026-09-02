@@ -19,14 +19,15 @@ services:
     build: .
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/visual_inventory
-      CORS_ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173,http://localhost:8501,http://127.0.0.1:8501
+      CORS_ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
       DETECTOR_BACKEND: yolo26
       FALLBACK_TO_YOLOV8: "true"
-      DETECTOR_RECOGNIZED_CONFIDENCE_THRESHOLD: "0.60"
+      DETECTOR_RECOGNIZED_CONFIDENCE_THRESHOLD: "0.55"
       DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD: "0.45"
       SIMILARITY_RECOGNIZED_THRESHOLD: "0.15"
       SIMILARITY_UNKNOWN_THRESHOLD: "0.22"
       SIMILARITY_MARGIN_THRESHOLD: "0.03"
+      AUTO_ACCEPT_SCORE_THRESHOLD: "0.75"
       TOP_K_CANDIDATES: "5"
       ENABLE_OCR: "false"
       OCR_ENGINE: easyocr
@@ -76,11 +77,11 @@ services:
         condition: service_healthy
 
   frontend:
-    build: ./frontend
-    environment:
-      DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD: "0.45"
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
     ports:
-      - "8501:8501"
+      - "5173:80"
     depends_on:
       - api
 

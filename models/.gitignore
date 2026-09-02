@@ -1,2 +1,4 @@
 *
 !.gitignore
+!warehouse.pt
+!.gitignore

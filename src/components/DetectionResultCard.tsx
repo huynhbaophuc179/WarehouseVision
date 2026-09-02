@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { formatNumber, formatPercent, statusLabel } from "@/lib/format";
+import { confidenceLevelLabel, formatNumber, formatPercent, statusLabel } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { CandidateResponse, DetectionDecision, DetectionDecisionState, DetectionResult } from "@/types/api";
 
@@ -42,8 +42,12 @@ export const DetectionResultCard = ({
   onProductSelect,
   onQuantityChange,
 }: DetectionResultCardProps): JSX.Element => {
-  const productName = detection.name ?? "Chưa xác định";
-  const productId = state.selectedProductId ?? detection.product_id ?? "-";
+  const selectedCandidate =
+    detection.candidates.find((candidate) => candidate.product_id === state.selectedProductId) ??
+    detection.candidates[0] ??
+    null;
+  const productName = detection.name ?? selectedCandidate?.name ?? selectedCandidate?.product_name ?? "Chưa xác định";
+  const productId = state.selectedProductId ?? detection.product_id ?? selectedCandidate?.product_id ?? "-";
   const cropSrc = detection.crop_preview_base64
     ? `data:image/jpeg;base64,${detection.crop_preview_base64}`
     : null;
@@ -86,10 +90,10 @@ export const DetectionResultCard = ({
               </div>
               <div>
                 <p className="text-slate-400">Tin cậy</p>
-                <p className="font-semibold text-slate-950">{detection.confidence_level ?? "-"}</p>
+                <p className="font-semibold text-slate-950">{confidenceLevelLabel(detection.confidence_level)}</p>
               </div>
               <div>
-                <p className="text-slate-400">AI vùng</p>
+                <p className="text-slate-400">Độ chắc vùng</p>
                 <p className="font-semibold text-slate-950">{formatPercent(detection.detector_confidence)}</p>
               </div>
             </div>
@@ -148,7 +152,7 @@ export const DetectionResultCard = ({
         </div>
         {candidates.length > 0 && (
           <div className="mt-3 space-y-2">
-            <p className="text-xs font-medium text-slate-500">Gợi ý SKU</p>
+            <p className="text-xs font-medium text-slate-500">Gợi ý sản phẩm</p>
             <div className="space-y-1">
               {candidates.map((candidate) => (
                 <button

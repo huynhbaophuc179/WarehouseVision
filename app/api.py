@@ -1,4 +1,5 @@
 import base64
+import csv
 import json
 import logging
 import mimetypes
@@ -9,6 +10,7 @@ import subprocess
 import tempfile
 import unicodedata
 import uuid
+import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime
 from difflib import SequenceMatcher
@@ -19,6 +21,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from PIL import Image
 
@@ -35,6 +38,7 @@ from .models import (
     DetectionReview,
     InventoryTransaction,
     Product,
+    ProductCategory,
     ProductEmbedding,
     RecognitionSession,
 )
@@ -43,7 +47,7 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
 DETECTOR_RECOGNIZED_CONFIDENCE_THRESHOLD = float(
-    os.getenv("DETECTOR_RECOGNIZED_CONFIDENCE_THRESHOLD", "0.60")
+    os.getenv("DETECTOR_RECOGNIZED_CONFIDENCE_THRESHOLD", "0.55")
 )
 DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD = float(
     os.getenv("DETECTOR_UNCERTAIN_CONFIDENCE_THRESHOLD", "0.45")
@@ -53,6 +57,7 @@ SIMILARITY_RECOGNIZED_THRESHOLD = float(
 )
 SIMILARITY_UNKNOWN_THRESHOLD = float(os.getenv("SIMILARITY_UNKNOWN_THRESHOLD", "0.22"))
 SIMILARITY_MARGIN_THRESHOLD = float(os.getenv("SIMILARITY_MARGIN_THRESHOLD", "0.03"))
+AUTO_ACCEPT_SCORE_THRESHOLD = float(os.getenv("AUTO_ACCEPT_SCORE_THRESHOLD", "0.75"))
 TOP_K_CANDIDATES = int(
     os.getenv("TOP_K_CANDIDATES", os.getenv("RECOGNITION_CANDIDATE_LIMIT", "5"))
 )
@@ -113,7 +118,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Visual Search & Inventory PoC",
+    title="Kiểm kho",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -122,7 +127,7 @@ CORS_ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv(
         "CORS_ALLOWED_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8501,http://127.0.0.1:8501",
+        "http://localhost:5173,http://127.0.0.1:5173",
     ).split(",")
     if origin.strip()
 ]
@@ -139,7 +144,40 @@ app.add_middleware(
 class ProductResponse(BaseModel):
     product_id: str
     name: str
+    category: str | None = None
     inventory_count: int
+
+
+class ProductMetadataUpdateRequest(BaseModel):
+    name: str
+    category: str | None = None
+
+
+class ProductCategoryCreateRequest(BaseModel):
+    name: str
+
+
+class ProductCategoryUpdateRequest(BaseModel):
+    name: str
+
+
+class ProductCategoryResponse(BaseModel):
+    id: int
+    name: str
+    product_count: int
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ProductCategoryListResponse(BaseModel):
+    categories: list[ProductCategoryResponse] = Field(default_factory=list)
+    unclassified_product_count: int = 0
+
+
+class ProductCategoryDeleteResponse(BaseModel):
+    id: int
+    name: str
+    cleared_product_count: int
 
 
 class ProductManagementResponse(ProductResponse):
@@ -190,6 +228,12 @@ class ProductEmbeddingResponse(BaseModel):
     quality_status: str
 
 
+class ProductReferenceCaptureResponse(ProductEmbeddingResponse):
+    detected_box: list[float]
+    crop_preview_base64: str
+    reference_image_count: int
+
+
 class ProductEmbeddingDetailResponse(ProductEmbeddingResponse):
     created_at: datetime | None = None
     image_preview_base64: str | None = None
@@ -199,12 +243,42 @@ class ProductDetailResponse(ProductManagementResponse):
     embeddings: list[ProductEmbeddingDetailResponse] = Field(default_factory=list)
 
 
+class ProductEmbeddingDeleteResponse(BaseModel):
+    id: int
+    product_id: str
+    deleted_image: bool
+    reference_image_count: int
+    cleared_review_embedding_links: int
+
+
+class ProductBatchImportRowResponse(BaseModel):
+    row_index: int
+    ma_san_pham: str | None = None
+    ten_san_pham: str | None = None
+    nhom_mat_hang: str | None = None
+    status: str
+    message: str
+    matched_images: list[str] = Field(default_factory=list)
+    embedding_count: int = 0
+
+
+class ProductBatchImportResponse(BaseModel):
+    total_rows: int
+    created_count: int
+    updated_count: int
+    failed_count: int
+    missing_image_count: int
+    embedding_count: int
+    rows: list[ProductBatchImportRowResponse] = Field(default_factory=list)
+
+
 class MultiRecognizeResponse(BaseModel):
     session_id: int | None
     review_id: int | None
     detection_id: str
     box: list[float]
     crop_preview_base64: str | None
+    reference_image_base64: str | None = None
     detector_confidence: float | None
     detector_backend: str | None = None
     detector_model: str | None = None
@@ -378,6 +452,191 @@ def _save_upload_to_temp(file: UploadFile) -> str:
 def _ensure_image(file: UploadFile) -> None:
     if file.content_type and not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Uploaded file must be an image")
+
+
+def _ensure_product_import_file(file: UploadFile) -> None:
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in {".csv", ".xls", ".xlsx"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Danh sách mã hàng phải là tệp bảng tính hợp lệ",
+        )
+
+
+def _ensure_zip(file: UploadFile | None) -> None:
+    if file is None:
+        return
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix != ".zip":
+        raise HTTPException(status_code=400, detail="File ảnh phải là file ZIP")
+
+
+def _normalize_csv_header(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value.strip().lower())
+    ascii_value = "".join(character for character in normalized if not unicodedata.combining(character))
+    return re.sub(r"[^a-z0-9]+", "_", ascii_value).strip("_")
+
+
+def _csv_value(row: dict[str | None, str], aliases: set[str]) -> str:
+    for key, value in row.items():
+        if key is None:
+            continue
+        if _normalize_csv_header(key) in aliases:
+            return (value or "").strip()
+    return ""
+
+
+async def _read_upload_bytes(file: UploadFile) -> bytes:
+    await file.seek(0)
+    return await file.read()
+
+
+def _parse_product_import_csv(content: bytes) -> list[dict[str, str | int]]:
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="CSV phải dùng mã hóa UTF-8") from exc
+
+    reader = csv.DictReader(text.splitlines())
+    if not reader.fieldnames:
+        raise HTTPException(status_code=400, detail="CSV không có header")
+
+    rows: list[dict[str, str | int]] = []
+    for row_index, row in enumerate(reader, start=1):
+        product_id = _csv_value(row, {"ma_san_pham", "product_id", "sku"})
+        name = _csv_value(row, {"ten_san_pham", "name", "product_name"})
+        inventory_text = _csv_value(row, {"so_luong_ton_kho", "ton_kho", "inventory_count", "stock"})
+        category = _csv_value(row, {"nhom_mat_hang", "phan_loai", "category", "product_group"})
+        rows.append(
+            {
+                "row_index": row_index,
+                "product_id": product_id,
+                "name": name,
+                "inventory_count_text": inventory_text,
+                "category": category,
+            }
+        )
+    return rows
+
+
+def _import_cell_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _parse_product_import_excel(content: bytes, suffix: str) -> list[dict[str, str | int]]:
+    try:
+        if suffix == ".xls":
+            import xlrd
+
+            workbook = xlrd.open_workbook(file_contents=content)
+            sheet = workbook.sheet_by_index(0)
+            raw_rows = [sheet.row_values(index) for index in range(sheet.nrows)]
+        else:
+            from openpyxl import load_workbook
+
+            workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+            sheet = workbook.worksheets[0]
+            raw_rows = [list(row) for row in sheet.iter_rows(values_only=True)]
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Không đọc được tệp bảng tính") from exc
+
+    if not raw_rows:
+        raise HTTPException(status_code=400, detail="Tệp bảng tính không có dữ liệu")
+
+    headers = [_normalize_csv_header(_import_cell_text(value)) for value in raw_rows[0]]
+    rows: list[dict[str, str | int]] = []
+    for row_index, values in enumerate(raw_rows[1:], start=1):
+        normalized_row = {
+            header: _import_cell_text(values[index] if index < len(values) else None)
+            for index, header in enumerate(headers)
+            if header
+        }
+
+        def value_for(aliases: set[str]) -> str:
+            return next(
+                (normalized_row[alias] for alias in aliases if normalized_row.get(alias)),
+                "",
+            )
+
+        product_id = value_for({"ma_hang", "ma_san_pham", "product_id", "sku"})
+        name = value_for({"ten_mat_hang", "ten_san_pham", "name", "product_name"})
+        inventory_text = value_for({"so_luong_ton_kho", "ton_kho", "inventory_count", "stock"})
+        category = value_for({"nhom_mat_hang", "phan_loai", "category", "product_group"})
+        if not any((product_id, name, inventory_text, category)):
+            continue
+        rows.append(
+            {
+                "row_index": row_index,
+                "product_id": product_id,
+                "name": name,
+                "inventory_count_text": inventory_text,
+                "category": category,
+            }
+        )
+    return rows
+
+
+def _parse_product_import_file(
+    content: bytes,
+    filename: str | None,
+) -> list[dict[str, str | int]]:
+    suffix = Path(filename or "").suffix.lower()
+    if suffix == ".csv":
+        return _parse_product_import_csv(content)
+    return _parse_product_import_excel(content, suffix)
+
+
+IMAGE_ZIP_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+def _zip_image_entries(content: bytes) -> dict[str, bytes]:
+    if not content:
+        return {}
+    try:
+        with zipfile.ZipFile(BytesIO(content)) as archive:
+            entries: dict[str, bytes] = {}
+            for info in archive.infolist():
+                path = Path(info.filename)
+                if info.is_dir():
+                    continue
+                if any(part.startswith("__MACOSX") for part in path.parts):
+                    continue
+                if path.name.startswith("."):
+                    continue
+                if path.suffix.lower() not in IMAGE_ZIP_SUFFIXES:
+                    continue
+                entries[info.filename] = archive.read(info)
+            return entries
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(status_code=400, detail="File ảnh ZIP không hợp lệ") from exc
+
+
+def _images_for_product(product_id: str, zip_images: dict[str, bytes]) -> list[tuple[str, bytes]]:
+    product_key = product_id.casefold()
+    folder_matches: list[tuple[str, bytes]] = []
+    prefix_matches: list[tuple[str, bytes]] = []
+
+    for archive_path, image_bytes in zip_images.items():
+        path = Path(archive_path)
+        parts = [part for part in path.parts if part not in {"", "."}]
+        if parts and parts[0].casefold() == product_key:
+            folder_matches.append((archive_path, image_bytes))
+            continue
+        if path.name.casefold().startswith(product_key):
+            prefix_matches.append((archive_path, image_bytes))
+
+    return sorted(folder_matches or prefix_matches, key=lambda item: item[0].casefold())
+
+
+def _write_import_image_temp(archive_path: str, image_bytes: bytes) -> str:
+    suffix = Path(archive_path).suffix.lower() or ".jpg"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+        temp_file.write(image_bytes)
+        return temp_file.name
 
 
 def _ensure_review_storage_dir() -> Path:
@@ -1185,6 +1444,30 @@ def _save_product_reference_image(product_id: str, source_path: str) -> str:
     return str(image_path)
 
 
+def _save_product_reference_crop(
+    product_id: str,
+    source_path: str,
+    box: list[float],
+) -> str:
+    image = Image.open(source_path).convert("RGB")
+    width, height = image.size
+    left, top, right, bottom = box
+    crop_box = (
+        max(0, min(int(round(left)), width)),
+        max(0, min(int(round(top)), height)),
+        max(0, min(int(round(right)), width)),
+        max(0, min(int(round(bottom)), height)),
+    )
+    if crop_box[2] <= crop_box[0] or crop_box[3] <= crop_box[1]:
+        raise HTTPException(status_code=400, detail="Vùng sản phẩm không hợp lệ")
+
+    product_dir = PRODUCT_REFERENCE_DIR / _safe_path_segment(product_id)
+    product_dir.mkdir(parents=True, exist_ok=True)
+    image_path = product_dir / f"{uuid.uuid4().hex}.jpg"
+    image.crop(crop_box).save(image_path, format="JPEG", quality=92)
+    return str(image_path)
+
+
 def _product_embedding_response(
     product_embedding: ProductEmbedding,
     preview_size: tuple[int, int] = (192, 192),
@@ -1202,6 +1485,23 @@ def _product_embedding_response(
             max_size=preview_size,
         ),
     )
+
+
+def _delete_product_reference_file(image_path: str | None) -> bool:
+    if not image_path:
+        return False
+
+    reference_root = PRODUCT_REFERENCE_DIR.resolve()
+    candidate = Path(image_path).resolve()
+    if not candidate.is_relative_to(reference_root) or not candidate.is_file():
+        return False
+
+    try:
+        candidate.unlink()
+        return True
+    except OSError:
+        logger.exception("Không thể xoá ảnh tham chiếu %s", candidate)
+        return False
 
 
 def _latest_review_crop_for_product(
@@ -1243,25 +1543,23 @@ def _product_summary_response(product: Product, db: Session) -> ProductManagemen
         if thumbnail_embedding is not None
         else _latest_review_crop_for_product(product.product_id, db, confirmed_only=True)
     )
-    if thumbnail_path is None:
-        thumbnail_path = _latest_review_crop_for_product(
-            product.product_id,
-            db,
-            confirmed_only=False,
-        )
+
+    approved_embedding_count = sum(
+        1 for embedding in embeddings if embedding.quality_status in APPROVED_EMBEDDING_STATUSES
+    )
+    pending_embedding_count = sum(
+        1 for embedding in embeddings if embedding.quality_status == "pending"
+    )
 
     return ProductManagementResponse(
         product_id=product.product_id,
         name=product.name,
+        category=product.category,
         inventory_count=product.inventory_count or 0,
         embedding_count=len(embeddings),
-        approved_embedding_count=sum(
-            1 for embedding in embeddings if embedding.quality_status in APPROVED_EMBEDDING_STATUSES
-        ),
-        pending_embedding_count=sum(
-            1 for embedding in embeddings if embedding.quality_status == "pending"
-        ),
-        reference_image_count=sum(1 for embedding in embeddings if embedding.image_path),
+        approved_embedding_count=approved_embedding_count,
+        pending_embedding_count=pending_embedding_count,
+        reference_image_count=approved_embedding_count + pending_embedding_count,
         thumbnail_base64=_image_to_base64(
             thumbnail_path,
             max_size=(96, 96),
@@ -1269,6 +1567,56 @@ def _product_summary_response(product: Product, db: Session) -> ProductManagemen
         created_at=product.created_at,
         updated_at=product.updated_at,
     )
+
+
+def _normalized_category_name(name: str) -> str:
+    normalized = " ".join(name.strip().split())
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Tên phân loại không được để trống")
+    if len(normalized) > 255:
+        raise HTTPException(status_code=400, detail="Tên phân loại không được dài quá 255 ký tự")
+    return normalized
+
+
+def _category_product_query(db: Session, category_name: str):
+    return db.query(Product).filter(
+        func.lower(func.trim(Product.category)) == category_name.lower()
+    )
+
+
+def _category_response(category: ProductCategory, db: Session) -> ProductCategoryResponse:
+    return ProductCategoryResponse(
+        id=category.id,
+        name=category.name,
+        product_count=_category_product_query(db, category.name).count(),
+        created_at=category.created_at,
+        updated_at=category.updated_at,
+    )
+
+
+def _sync_product_categories(db: Session) -> None:
+    existing_names = {
+        category.name.lower()
+        for category in db.query(ProductCategory).all()
+    }
+    product_categories = (
+        db.query(Product.category)
+        .filter(Product.category.isnot(None))
+        .distinct()
+        .all()
+    )
+    changed = False
+    for (raw_name,) in product_categories:
+        if not raw_name or not raw_name.strip():
+            continue
+        name = " ".join(raw_name.strip().split())
+        if name.lower() in existing_names:
+            continue
+        db.add(ProductCategory(name=name))
+        existing_names.add(name.lower())
+        changed = True
+    if changed:
+        db.commit()
 
 
 @lru_cache(maxsize=1)
@@ -1704,18 +2052,300 @@ def list_products(
     if search:
         pattern = f"%{search.strip()}%"
         query = query.filter(
-            (Product.product_id.ilike(pattern)) | (Product.name.ilike(pattern))
+            (Product.product_id.ilike(pattern))
+            | (Product.name.ilike(pattern))
+            | (Product.category.ilike(pattern))
         )
 
-    products = query.order_by(Product.product_id).limit(limit).all()
+    products = query.order_by(Product.category, Product.product_id).limit(limit).all()
     return [_product_summary_response(product, db) for product in products]
+
+
+@app.get("/api/v1/product-categories", response_model=ProductCategoryListResponse)
+def list_product_categories(db: Session = Depends(get_db)):
+    _sync_product_categories(db)
+    categories = db.query(ProductCategory).order_by(ProductCategory.name).all()
+    unclassified_product_count = (
+        db.query(Product)
+        .filter(
+            (Product.category.is_(None))
+            | (func.trim(Product.category) == "")
+        )
+        .count()
+    )
+    return ProductCategoryListResponse(
+        categories=[_category_response(category, db) for category in categories],
+        unclassified_product_count=unclassified_product_count,
+    )
+
+
+@app.post("/api/v1/product-categories", response_model=ProductCategoryResponse, status_code=201)
+def create_product_category(
+    payload: ProductCategoryCreateRequest,
+    db: Session = Depends(get_db),
+):
+    name = _normalized_category_name(payload.name)
+    existing = (
+        db.query(ProductCategory)
+        .filter(func.lower(ProductCategory.name) == name.lower())
+        .first()
+    )
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="Phân loại này đã tồn tại")
+
+    category = ProductCategory(name=name)
+    db.add(category)
+    db.commit()
+    db.refresh(category)
+    return _category_response(category, db)
+
+
+@app.patch(
+    "/api/v1/product-categories/{category_id}",
+    response_model=ProductCategoryResponse,
+)
+def update_product_category(
+    category_id: int,
+    payload: ProductCategoryUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    category = db.get(ProductCategory, category_id)
+    if category is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy phân loại")
+
+    name = _normalized_category_name(payload.name)
+    duplicate = (
+        db.query(ProductCategory)
+        .filter(ProductCategory.id != category_id)
+        .filter(func.lower(ProductCategory.name) == name.lower())
+        .first()
+    )
+    if duplicate is not None:
+        raise HTTPException(status_code=409, detail="Phân loại này đã tồn tại")
+
+    old_name = category.name
+    _category_product_query(db, old_name).update(
+        {Product.category: name},
+        synchronize_session=False,
+    )
+    category.name = name
+    db.commit()
+    db.refresh(category)
+    return _category_response(category, db)
+
+
+@app.delete(
+    "/api/v1/product-categories/{category_id}",
+    response_model=ProductCategoryDeleteResponse,
+)
+def delete_product_category(
+    category_id: int,
+    db: Session = Depends(get_db),
+):
+    category = db.get(ProductCategory, category_id)
+    if category is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy phân loại")
+
+    cleared_product_count = _category_product_query(db, category.name).update(
+        {Product.category: None},
+        synchronize_session=False,
+    )
+    response = ProductCategoryDeleteResponse(
+        id=category.id,
+        name=category.name,
+        cleared_product_count=cleared_product_count,
+    )
+    db.delete(category)
+    db.commit()
+    return response
+
+
+@app.post("/api/v1/products/batch-import", response_model=ProductBatchImportResponse)
+async def batch_import_products(
+    danh_sach_san_pham: UploadFile = File(...),
+    file_anh: UploadFile | None = File(None),
+    dry_run: bool = Form(False),
+    db: Session = Depends(get_db),
+):
+    _ensure_product_import_file(danh_sach_san_pham)
+    _ensure_zip(file_anh)
+
+    import_rows = _parse_product_import_file(
+        await _read_upload_bytes(danh_sach_san_pham),
+        danh_sach_san_pham.filename,
+    )
+    zip_images = _zip_image_entries(await _read_upload_bytes(file_anh)) if file_anh else {}
+
+    rows: list[ProductBatchImportRowResponse] = []
+    created_count = 0
+    updated_count = 0
+    failed_count = 0
+    missing_image_count = 0
+    embedding_count = 0
+
+    for import_row in import_rows:
+        row_index = int(import_row["row_index"])
+        product_id = str(import_row["product_id"]).strip()
+        name = str(import_row["name"]).strip()
+        inventory_text = str(import_row["inventory_count_text"]).strip()
+        category = str(import_row["category"]).strip()
+        matched_images = _images_for_product(product_id, zip_images) if product_id else []
+        matched_image_names = [archive_path for archive_path, _ in matched_images]
+
+        if not product_id or not name:
+            failed_count += 1
+            rows.append(
+                ProductBatchImportRowResponse(
+                    row_index=row_index,
+                    ma_san_pham=product_id or None,
+                    ten_san_pham=name or None,
+                    nhom_mat_hang=category or None,
+                    status="failed",
+                    message="Thiếu mã sản phẩm hoặc tên sản phẩm.",
+                    matched_images=matched_image_names,
+                )
+            )
+            continue
+
+        try:
+            inventory_count = int(inventory_text) if inventory_text else None
+        except ValueError:
+            failed_count += 1
+            rows.append(
+                ProductBatchImportRowResponse(
+                    row_index=row_index,
+                    ma_san_pham=product_id,
+                    ten_san_pham=name,
+                    nhom_mat_hang=category or None,
+                    status="failed",
+                    message="Số lượng tồn kho không hợp lệ.",
+                    matched_images=matched_image_names,
+                )
+            )
+            continue
+
+        existing_product = db.get(Product, product_id)
+        status = "updated" if existing_product is not None else "created"
+        row_embedding_count = 0
+
+        if dry_run:
+            row_embedding_count = len(matched_images)
+            if status == "created":
+                created_count += 1
+            else:
+                updated_count += 1
+            if not matched_images:
+                missing_image_count += 1
+            embedding_count += row_embedding_count
+            rows.append(
+                ProductBatchImportRowResponse(
+                    row_index=row_index,
+                    ma_san_pham=product_id,
+                    ten_san_pham=name,
+                    nhom_mat_hang=category or None,
+                    status=status,
+                    message=(
+                        "Sẽ nhập nhưng chưa tìm thấy ảnh tham chiếu."
+                        if not matched_images
+                        else f"Sẽ nhập {len(matched_images)} ảnh tham chiếu."
+                    ),
+                    matched_images=matched_image_names,
+                    embedding_count=row_embedding_count,
+                )
+            )
+            continue
+
+        temp_paths: list[str] = []
+        try:
+            product = existing_product
+            if product is None:
+                product = Product(product_id=product_id)
+                db.add(product)
+
+            product.name = name
+            if inventory_count is not None or product.inventory_count is None:
+                product.inventory_count = inventory_count or 0
+            if category or product.category is None:
+                product.category = category or None
+            db.flush()
+
+            for archive_path, image_bytes in matched_images:
+                temp_path = _write_import_image_temp(archive_path, image_bytes)
+                temp_paths.append(temp_path)
+                embedding = process_image(temp_path)
+                db.add(
+                    ProductEmbedding(
+                        product_id=product.product_id,
+                        embedding=embedding,
+                        image_path=_save_product_reference_image(product.product_id, temp_path),
+                        view_label=None,
+                        source="batch_import",
+                        quality_status="approved",
+                    )
+                )
+                row_embedding_count += 1
+
+            db.commit()
+
+            if status == "created":
+                created_count += 1
+            else:
+                updated_count += 1
+            if not matched_images:
+                missing_image_count += 1
+            embedding_count += row_embedding_count
+            rows.append(
+                ProductBatchImportRowResponse(
+                    row_index=row_index,
+                    ma_san_pham=product_id,
+                    ten_san_pham=name,
+                    nhom_mat_hang=category or None,
+                    status=status,
+                    message=(
+                        "Đã nhập nhưng chưa tìm thấy ảnh tham chiếu."
+                        if not matched_images
+                        else f"Đã nhập {row_embedding_count} ảnh tham chiếu."
+                    ),
+                    matched_images=matched_image_names,
+                    embedding_count=row_embedding_count,
+                )
+            )
+        except Exception as exc:
+            db.rollback()
+            failed_count += 1
+            rows.append(
+                ProductBatchImportRowResponse(
+                    row_index=row_index,
+                    ma_san_pham=product_id,
+                    ten_san_pham=name,
+                    nhom_mat_hang=category or None,
+                    status="failed",
+                    message=str(exc),
+                    matched_images=matched_image_names,
+                    embedding_count=row_embedding_count,
+                )
+            )
+        finally:
+            for temp_path in temp_paths:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+
+    return ProductBatchImportResponse(
+        total_rows=len(import_rows),
+        created_count=created_count,
+        updated_count=updated_count,
+        failed_count=failed_count,
+        missing_image_count=missing_image_count,
+        embedding_count=embedding_count,
+        rows=rows,
+    )
 
 
 @app.get("/api/v1/products/{product_id}", response_model=ProductDetailResponse)
 def get_product_detail(product_id: str, db: Session = Depends(get_db)):
     product = db.get(Product, product_id)
     if product is None:
-        raise HTTPException(status_code=404, detail="Product not found")
+        raise HTTPException(status_code=404, detail="Không tìm thấy mã hàng")
 
     embeddings = (
         db.query(ProductEmbedding)
@@ -1727,6 +2357,7 @@ def get_product_detail(product_id: str, db: Session = Depends(get_db)):
     return ProductDetailResponse(
         product_id=summary.product_id,
         name=summary.name,
+        category=summary.category,
         inventory_count=summary.inventory_count,
         embedding_count=summary.embedding_count,
         approved_embedding_count=summary.approved_embedding_count,
@@ -1742,23 +2373,105 @@ def get_product_detail(product_id: str, db: Session = Depends(get_db)):
     )
 
 
+@app.patch("/api/v1/products/{product_id}", response_model=ProductManagementResponse)
+def update_product_metadata(
+    product_id: str,
+    payload: ProductMetadataUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    product = db.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy mã hàng")
+
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Tên mã hàng không được để trống")
+
+    product.name = name
+    product.category = payload.category.strip() if payload.category and payload.category.strip() else None
+    db.commit()
+    db.refresh(product)
+    return _product_summary_response(product, db)
+
+
+@app.delete(
+    "/api/v1/products/{product_id}/embeddings/{embedding_id}",
+    response_model=ProductEmbeddingDeleteResponse,
+)
+def delete_product_embedding(
+    product_id: str,
+    embedding_id: int,
+    db: Session = Depends(get_db),
+):
+    product = db.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy mã hàng")
+
+    product_embedding = db.get(ProductEmbedding, embedding_id)
+    if product_embedding is None or product_embedding.product_id != product_id:
+        raise HTTPException(status_code=404, detail="Không tìm thấy ảnh tham chiếu")
+
+    image_path = product_embedding.image_path
+    image_is_shared = False
+    if image_path:
+        image_is_shared = (
+            db.query(ProductEmbedding.id)
+            .filter(ProductEmbedding.image_path == image_path)
+            .filter(ProductEmbedding.id != embedding_id)
+            .first()
+            is not None
+        )
+
+    review_refs = db.query(DetectionReview).filter(
+        DetectionReview.matched_embedding_id == embedding_id
+    )
+    cleared_review_embedding_links = 0
+    for review in review_refs.all():
+        review.matched_embedding_id = None
+        review.matched_view_label = None
+        cleared_review_embedding_links += 1
+
+    db.delete(product_embedding)
+    db.flush()
+    reference_image_count = (
+        db.query(ProductEmbedding)
+        .filter(ProductEmbedding.product_id == product_id)
+        .filter(ProductEmbedding.quality_status.in_(APPROVED_EMBEDDING_STATUSES))
+        .count()
+    )
+    db.commit()
+
+    deleted_image = False if image_is_shared else _delete_product_reference_file(image_path)
+    return ProductEmbeddingDeleteResponse(
+        id=embedding_id,
+        product_id=product_id,
+        deleted_image=deleted_image,
+        reference_image_count=reference_image_count,
+        cleared_review_embedding_links=cleared_review_embedding_links,
+    )
+
+
 @app.post("/api/v1/products", response_model=ProductResponse, status_code=201)
 async def upsert_product(
     product_id: str = Form(...),
     name: str = Form(...),
+    category: str | None = Form(None),
     inventory_count: int = Form(0),
     view_label: str | None = Form(None),
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
     db: Session = Depends(get_db),
 ):
-    _ensure_image(file)
-    temp_path = _save_upload_to_temp(file)
+    temp_path: str | None = None
+    embedding: list[float] | None = None
 
     try:
-        try:
-            embedding = process_registration_image(temp_path)
-        except RegistrationImageError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if file is not None:
+            _ensure_image(file)
+            temp_path = _save_upload_to_temp(file)
+            try:
+                embedding = process_registration_image(temp_path)
+            except RegistrationImageError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         product = db.get(Product, product_id)
 
@@ -1767,19 +2480,22 @@ async def upsert_product(
             db.add(product)
 
         product.name = name
+        if category is not None:
+            product.category = category.strip() or None
         product.inventory_count = inventory_count
         db.flush()
-        reference_image_path = _save_product_reference_image(product.product_id, temp_path)
-        db.add(
-            ProductEmbedding(
-                product_id=product.product_id,
-                embedding=embedding,
-                image_path=reference_image_path,
-                view_label=view_label,
-                source="manual_upload",
-                quality_status="approved",
+        if embedding is not None and temp_path is not None:
+            reference_image_path = _save_product_reference_image(product.product_id, temp_path)
+            db.add(
+                ProductEmbedding(
+                    product_id=product.product_id,
+                    embedding=embedding,
+                    image_path=reference_image_path,
+                    view_label=view_label,
+                    source="manual_upload",
+                    quality_status="approved",
+                )
             )
-        )
 
         db.commit()
         db.refresh(product)
@@ -1787,13 +2503,14 @@ async def upsert_product(
         return ProductResponse(
             product_id=product.product_id,
             name=product.name,
+            category=product.category,
             inventory_count=product.inventory_count,
         )
     except Exception:
         db.rollback()
         raise
     finally:
-        if os.path.exists(temp_path):
+        if temp_path is not None and os.path.exists(temp_path):
             os.remove(temp_path)
 
 
@@ -1801,7 +2518,7 @@ async def upsert_product(
 def delete_product(product_id: str, db: Session = Depends(get_db)):
     product = db.get(Product, product_id)
     if product is None:
-        raise HTTPException(status_code=404, detail="Product not found")
+        raise HTTPException(status_code=404, detail="Không tìm thấy mã hàng")
 
     embedding_ids = [
         row[0]
@@ -1909,12 +2626,106 @@ async def add_product_embedding(
             os.remove(temp_path)
 
 
+@app.post(
+    "/api/v1/products/{product_id}/capture-reference",
+    response_model=ProductReferenceCaptureResponse,
+    status_code=201,
+)
+async def capture_product_reference(
+    product_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    _ensure_image(file)
+    temp_path = _save_upload_to_temp(file)
+    reference_image_path: str | None = None
+    committed = False
+
+    try:
+        product = db.get(Product, product_id)
+        if product is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy mã sản phẩm")
+
+        detected_items = [
+            item
+            for item in process_multiple_images(temp_path)
+            if item.get("embedding") is not None and item.get("is_valid_crop")
+        ]
+        if not detected_items:
+            raise HTTPException(
+                status_code=400,
+                detail="Không thấy sản phẩm. Hãy đặt một sản phẩm rõ ràng trên bàn và chụp lại.",
+            )
+        if len(detected_items) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Ảnh có nhiều sản phẩm. Hãy chỉ đặt một sản phẩm trên bàn và chụp lại.",
+            )
+
+        detected_item = detected_items[0]
+        detected_box = [float(value) for value in detected_item["box"]]
+        reference_image_path = _save_product_reference_crop(
+            product.product_id,
+            temp_path,
+            detected_box,
+        )
+        product_embedding = ProductEmbedding(
+            product_id=product.product_id,
+            embedding=detected_item["embedding"],
+            image_path=reference_image_path,
+            view_label=None,
+            source="operator_capture",
+            quality_status="approved",
+        )
+        db.add(product_embedding)
+        db.flush()
+
+        reference_image_count = (
+            db.query(ProductEmbedding)
+            .filter(ProductEmbedding.product_id == product.product_id)
+            .filter(ProductEmbedding.quality_status.in_(APPROVED_EMBEDDING_STATUSES))
+            .count()
+        )
+        crop_preview_base64 = _image_to_base64(reference_image_path, max_size=(512, 512))
+        if crop_preview_base64 is None:
+            raise HTTPException(status_code=500, detail="Không tạo được ảnh xem trước")
+
+        db.commit()
+        committed = True
+        db.refresh(product_embedding)
+
+        return ProductReferenceCaptureResponse(
+            id=product_embedding.id,
+            product_id=product_embedding.product_id,
+            view_label=product_embedding.view_label,
+            image_path=product_embedding.image_path,
+            source=product_embedding.source,
+            quality_status=product_embedding.quality_status,
+            detected_box=detected_box,
+            crop_preview_base64=crop_preview_base64,
+            reference_image_count=reference_image_count,
+        )
+    except Exception:
+        db.rollback()
+        if not committed and reference_image_path and os.path.exists(reference_image_path):
+            os.remove(reference_image_path)
+        raise
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
 @app.post("/api/v1/recognize", response_model=list[MultiRecognizeResponse])
 async def recognize(
     file: UploadFile = File(...),
     mode: str = Form("operation"),
     model_version: str | None = Form(None),
     top_k: int = Form(TOP_K_CANDIDATES, ge=1, le=20),
+    auto_accept_score_threshold: float = Form(
+        AUTO_ACCEPT_SCORE_THRESHOLD,
+        ge=0.0,
+        le=1.0,
+    ),
     db: Session = Depends(get_db),
 ):
     _ensure_image(file)
@@ -1935,6 +2746,7 @@ async def recognize(
                 "detection_id": detection_id,
                 "box": item["box"],
                 "crop_preview_base64": item.get("crop_preview_base64"),
+                "reference_image_base64": None,
                 "detector_confidence": item.get("detector_confidence"),
                 "detector_backend": item.get("detector_backend"),
                 "detector_model": item.get("detector_model"),
@@ -2045,6 +2857,13 @@ async def recognize(
             selected_candidate = candidates[0]
             top1_distance = selected_candidate.distance
             top2_distance = candidates[1].distance if len(candidates) > 1 else None
+            auto_accept_score = (
+                selected_candidate.final_score
+                if selected_candidate.final_score is not None
+                else selected_candidate.image_similarity_score
+            )
+            if auto_accept_score is None:
+                auto_accept_score = _image_similarity_score(top1_distance)
             distance_margin = (
                 top2_distance - top1_distance
                 if top2_distance is not None
@@ -2053,6 +2872,10 @@ async def recognize(
             match_fields = {
                 **base_response,
                 **ocr_fields,
+                "reference_image_base64": _image_to_base64(
+                    selected_candidate.reference_image_path,
+                    max_size=(640, 640),
+                ),
                 "distance": top1_distance,
                 "matched_embedding_id": selected_candidate.matched_embedding_id,
                 "matched_view_label": selected_candidate.matched_view_label,
@@ -2093,7 +2916,10 @@ async def recognize(
                 append_review_response({**match_fields, "status": "unknown"})
                 continue
 
-            if top1_distance > SIMILARITY_UNKNOWN_THRESHOLD:
+            if (
+                top1_distance > SIMILARITY_UNKNOWN_THRESHOLD
+                and auto_accept_score < auto_accept_score_threshold
+            ):
                 logger.info(
                     "recognize item=%s best_distance=%.6f status=%s",
                     index,
@@ -2121,11 +2947,12 @@ async def recognize(
                 )
                 continue
 
-            if top1_distance > SIMILARITY_RECOGNIZED_THRESHOLD:
+            if auto_accept_score < auto_accept_score_threshold:
                 logger.info(
-                    "recognize item=%s best_distance=%.6f status=%s",
+                    "recognize item=%s score=%.6f threshold=%.6f status=%s",
                     index,
-                    top1_distance,
+                    auto_accept_score,
+                    auto_accept_score_threshold,
                     "uncertain",
                 )
                 append_review_response(
@@ -2563,7 +3390,22 @@ def add_manual_detection(
     )
     db.add(review)
     db.flush()
-    _recognize_review_crop(db, review)
+    try:
+        _recognize_review_crop(db, review)
+    except Exception as exc:
+        logger.warning(
+            "Manual detection crop recognition skipped for session_id=%s review_id=%s: %s",
+            session.id,
+            review.id,
+            exc,
+        )
+        review.predicted_product_id = None
+        review.top1_distance = None
+        review.top2_distance = None
+        review.distance_margin = None
+        review.matched_embedding_id = None
+        review.matched_view_label = None
+        review.candidates_json = None
     yolo_product = (
         db.get(Product, payload.confirmed_product_id)
         if payload.confirmed_product_id
@@ -2661,6 +3503,18 @@ def update_product_embedding_quality_status(
     return _embedding_review_response(product_embedding, product)
 
 
+def _duplicate_confirmed_product_ids(
+    confirmed_items: list[ConfirmedInventoryItem],
+) -> list[str]:
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for item in confirmed_items:
+        if item.product_id in seen:
+            duplicates.add(item.product_id)
+        seen.add(item.product_id)
+    return sorted(duplicates)
+
+
 @app.post("/api/v1/inventory/confirm", response_model=InventoryConfirmResponse)
 async def confirm_inventory(
     payload: InventoryConfirmRequest,
@@ -2668,6 +3522,15 @@ async def confirm_inventory(
 ):
     valid_actions = {"count", "stock_in", "stock_out", "adjustment"}
     applied_items = []
+    duplicate_product_ids = _duplicate_confirmed_product_ids(payload.confirmed_items)
+    if duplicate_product_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Mỗi mã sản phẩm chỉ được xuất hiện một lần trong một phiên: "
+                + ", ".join(duplicate_product_ids)
+            ),
+        )
 
     try:
         for item in payload.confirmed_items:

@@ -1,6 +1,6 @@
 # Training A One-Class Product Detector
 
-WarehouseVision uses YOLO only to find product regions for cropping. YOLO does not identify the SKU. SKU recognition still comes from CLIP embeddings and pgvector nearest-neighbor search.
+The app uses YOLO only to find product regions for cropping. YOLO does not identify the product code. Product recognition still comes from CLIP embeddings and pgvector nearest-neighbor search.
 
 ## Detector Goal
 
