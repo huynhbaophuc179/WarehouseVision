@@ -9,15 +9,15 @@ export interface StatMetricProps {
 export const StatMetric = ({ label, value, tone = "default" }: StatMetricProps): JSX.Element => {
   const toneClass =
     tone === "success"
-      ? "text-emerald-700"
+      ? "text-success"
       : tone === "warning"
-        ? "text-amber-700"
-        : "text-slate-950";
+        ? "text-warning"
+        : "text-content";
 
   return (
-    <Card className="border-slate-200">
+    <Card className="border-line">
       <CardContent className="p-3">
-        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
+        <p className="text-xs font-medium uppercase tracking-wide text-muted">{label}</p>
         <p className={`mt-1 text-2xl font-semibold ${toneClass}`}>{value}</p>
       </CardContent>
     </Card>

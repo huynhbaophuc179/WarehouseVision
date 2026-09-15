@@ -1,81 +1,90 @@
-import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { X } from "lucide-react";
 import * as React from "react";
+import { Modal } from "antd";
+import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export const Dialog = DialogPrimitive.Root;
-export const DialogTrigger = DialogPrimitive.Trigger;
-export const DialogClose = DialogPrimitive.Close;
-export const DialogPortal = DialogPrimitive.Portal;
+interface DialogState {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  titleId: string;
+  descriptionId: string;
+}
 
-export const DialogOverlay = React.forwardRef<
-  React.ElementRef<typeof DialogPrimitive.Overlay>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Overlay>
->(({ className, ...props }, ref) => (
-  <DialogPrimitive.Overlay
-    ref={ref}
-    className={cn("fixed inset-0 z-50 bg-slate-950/55", className)}
-    {...props}
-  />
-));
+const DialogContext = React.createContext<DialogState | null>(null);
 
-DialogOverlay.displayName = DialogPrimitive.Overlay.displayName;
+export function useDialogState(): DialogState {
+  const context = React.useContext(DialogContext);
+  if (!context) throw new Error("Nội dung hộp thoại phải nằm trong hộp thoại.");
+  return context;
+}
 
-export const DialogContent = React.forwardRef<
-  React.ElementRef<typeof DialogPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, children, ...props }, ref) => (
-  <DialogPortal>
-    <DialogOverlay />
-    <DialogPrimitive.Content
-      ref={ref}
-      className={cn(
-        "fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border border-slate-200 bg-white p-6 shadow-xl",
-        className,
-      )}
-      {...props}
-    >
+interface DialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  children: React.ReactNode;
+}
+
+export function Dialog({ open, onOpenChange, children }: DialogProps): JSX.Element {
+  const id = React.useId();
+  const value = React.useMemo(() => ({
+    open, onOpenChange, titleId: `${id}-title`, descriptionId: `${id}-description`,
+  }), [open, onOpenChange, id]);
+  return (
+    <DialogContext.Provider value={value}>
       {children}
-      <DialogPrimitive.Close className="absolute right-4 top-4 rounded-md p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-950 focus:outline-none focus:ring-2 focus:ring-slate-400">
-        <X className="h-4 w-4" />
-        <span className="sr-only">Đóng</span>
-      </DialogPrimitive.Close>
-    </DialogPrimitive.Content>
-  </DialogPortal>
-));
+    </DialogContext.Provider>
+  );
+}
 
-DialogContent.displayName = DialogPrimitive.Content.displayName;
+interface DialogContentProps extends React.HTMLAttributes<HTMLDivElement> {
+  onOpenAutoFocus?: (event: Event) => void;
+}
+
+export const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
+  ({ className, children, onOpenAutoFocus, ...props }, ref) => {
+    const { open, onOpenChange, titleId, descriptionId } = useDialogState();
+    return (
+      <Modal
+        open={open}
+        centered
+        footer={null}
+        destroyOnHidden
+        closable={{ "aria-label": "Đóng" }}
+        closeIcon={<X aria-hidden="true" size={16} />}
+        onCancel={() => onOpenChange(false)}
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+        afterOpenChange={(visible) => {
+          if (visible) onOpenAutoFocus?.(new Event("openAutoFocus", { cancelable: true }));
+        }}
+      >
+        <div {...props} ref={ref} className={className}>{children}</div>
+      </Modal>
+    );
+  },
+);
+DialogContent.displayName = "DialogContent";
 
 export const DialogHeader = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>): JSX.Element => (
-  <div className={cn("space-y-2 text-left", className)} {...props} />
+  <div {...props} className={cn("space-y-2 pr-6 text-left", className)} />
 );
 
 export const DialogFooter = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>): JSX.Element => (
-  <div className={cn("flex flex-col-reverse gap-2 sm:flex-row sm:justify-end", className)} {...props} />
+  <div {...props} className={cn("flex flex-col-reverse gap-2 sm:flex-row sm:justify-end", className)} />
 );
 
-export const DialogTitle = React.forwardRef<
-  React.ElementRef<typeof DialogPrimitive.Title>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Title>
->(({ className, ...props }, ref) => (
-  <DialogPrimitive.Title
-    ref={ref}
-    className={cn("text-lg font-semibold text-slate-950", className)}
-    {...props}
-  />
-));
+export const DialogTitle = React.forwardRef<HTMLHeadingElement, React.HTMLAttributes<HTMLHeadingElement>>(
+  ({ className, ...props }, ref) => {
+    const { titleId } = useDialogState();
+    return <h2 {...props} ref={ref} id={titleId} className={cn("text-lg font-semibold text-content", className)} />;
+  },
+);
+DialogTitle.displayName = "DialogTitle";
 
-DialogTitle.displayName = DialogPrimitive.Title.displayName;
-
-export const DialogDescription = React.forwardRef<
-  React.ElementRef<typeof DialogPrimitive.Description>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Description>
->(({ className, ...props }, ref) => (
-  <DialogPrimitive.Description
-    ref={ref}
-    className={cn("text-sm text-slate-500", className)}
-    {...props}
-  />
-));
-
-DialogDescription.displayName = DialogPrimitive.Description.displayName;
+export const DialogDescription = React.forwardRef<HTMLParagraphElement, React.HTMLAttributes<HTMLParagraphElement>>(
+  ({ className, ...props }, ref) => {
+    const { descriptionId } = useDialogState();
+    return <p {...props} ref={ref} id={descriptionId} className={cn("text-sm text-muted", className)} />;
+  },
+);
+DialogDescription.displayName = "DialogDescription";

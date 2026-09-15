@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   deleteProduct,
@@ -137,21 +137,17 @@ export const ProductDetailSheet = ({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="max-w-4xl overflow-y-auto">
-        <SheetHeader>
-          <SheetTitle>Chi tiết mã hàng</SheetTitle>
-          <SheetDescription>Chỉnh thông tin, phân loại và ảnh nhận diện của mã hàng.</SheetDescription>
-        </SheetHeader>
+      <SheetContent title="Chi tiết mã hàng" description="Chỉnh thông tin, phân loại và ảnh nhận diện của mã hàng." size={896} className="overflow-y-auto">
 
         {product ? (
           <div className="mt-6 space-y-5">
-            <div className="flex items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
-              <div className="flex h-11 w-11 items-center justify-center rounded-md bg-white text-slate-500 shadow-sm">
+            <div className="flex items-center gap-3 rounded-lg border border-line bg-subtle p-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-md bg-surface text-muted shadow-sm">
                 <Package className="h-5 w-5" />
               </div>
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold text-slate-950">{product.product_id}</p>
-                <p className="text-xs text-slate-500">Tồn kho hiện tại: {product.inventory_count}</p>
+                <p className="truncate text-sm font-semibold text-content">{product.product_id}</p>
+                <p className="text-xs text-muted">Tồn kho hiện tại: {product.inventory_count}</p>
               </div>
               <Badge variant={referenceCount > 0 ? "success" : "warning"}>
                 {referenceCount > 0 ? `${referenceCount} ảnh` : "Chưa có ảnh"}
@@ -159,12 +155,12 @@ export const ProductDetailSheet = ({
             </div>
 
             {errorMessage ? (
-              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              <div className="rounded-md border border-danger-border bg-danger-surface px-3 py-2 text-sm text-danger">
                 {errorMessage}
               </div>
             ) : null}
             {notice ? (
-              <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+              <div className="rounded-md border border-success-border bg-success-surface px-3 py-2 text-sm text-success">
                 {notice}
               </div>
             ) : null}
@@ -212,13 +208,13 @@ export const ProductDetailSheet = ({
               </div>
             </form>
 
-            <div className="border-t border-slate-200 pt-4">
+            <div className="border-t border-line pt-4">
               <div className="mb-3 flex items-center justify-between gap-3">
                 <div>
-                  <h3 className="text-sm font-semibold text-slate-950">Ảnh nhận diện</h3>
-                  <p className="mt-1 text-xs text-slate-500">Xóa ảnh chụp nhầm để tránh nhận diện sai.</p>
+                  <h3 className="text-sm font-semibold text-content">Ảnh nhận diện</h3>
+                  <p className="mt-1 text-xs text-muted">Xóa ảnh chụp nhầm để tránh nhận diện sai.</p>
                 </div>
-                <span className="text-xs text-slate-500">{referenceCount} ảnh</span>
+                <span className="text-xs text-muted">{referenceCount} ảnh</span>
               </div>
 
               {detailQuery.isLoading ? (
@@ -232,7 +228,7 @@ export const ProductDetailSheet = ({
                   {detail.embeddings.map((embedding, index) => (
                     <div
                       key={embedding.id}
-                      className="relative overflow-hidden rounded-lg border border-slate-200 bg-slate-50"
+                      className="relative overflow-hidden rounded-lg border border-line bg-subtle"
                     >
                       {embedding.image_preview_base64 ? (
                         <img
@@ -241,7 +237,7 @@ export const ProductDetailSheet = ({
                           className="aspect-square w-full object-cover"
                         />
                       ) : (
-                        <div className="flex aspect-square w-full items-center justify-center text-slate-400">
+                        <div className="flex aspect-square w-full items-center justify-center text-faint">
                           <ImageOff className="h-6 w-6" />
                         </div>
                       )}
@@ -266,17 +262,17 @@ export const ProductDetailSheet = ({
                   ))}
                 </div>
               ) : (
-                <div className="rounded-lg border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-500">
+                <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
                   Chưa có ảnh nhận diện.
                 </div>
               )}
             </div>
 
-            <div className="border-t border-red-200 pt-4">
-              <div className="flex items-center justify-between gap-4 rounded-lg border border-red-200 bg-red-50 p-3">
+            <div className="border-t border-danger-border pt-4">
+              <div className="flex items-center justify-between gap-4 rounded-lg border border-danger-border bg-danger-surface p-3">
                 <div>
-                  <p className="text-sm font-semibold text-red-800">Xóa mã hàng</p>
-                  <p className="mt-1 text-xs text-red-700">Ảnh nhận diện của mã hàng cũng sẽ bị xóa.</p>
+                  <p className="text-sm font-semibold text-danger">Xóa mã hàng</p>
+                  <p className="mt-1 text-xs text-danger">Ảnh nhận diện của mã hàng cũng sẽ bị xóa.</p>
                 </div>
                 <Button
                   type="button"

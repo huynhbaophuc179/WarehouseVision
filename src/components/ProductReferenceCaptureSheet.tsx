@@ -9,7 +9,7 @@ import {
   ProductImageCropCard,
   type ProductImageEntry,
 } from "@/components/ProductImageCropCard";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
 import {
   addProductEmbedding,
   captureProductReference,
@@ -71,14 +71,14 @@ const ReferenceImageThumbnail = ({
   }, [entry.file]);
 
   return (
-    <button
+    <Button variant="outline"
       type="button"
-      className={`relative h-20 w-24 shrink-0 overflow-hidden rounded-lg border-2 bg-slate-100 text-left transition ${
+      className={`relative h-20 w-24 shrink-0 overflow-hidden p-0 rounded-lg border-2 bg-inset text-left transition ${
         active
-          ? "border-blue-600 ring-2 ring-blue-100"
+          ? "border-primary ring-2 ring-selected"
           : entry.status === "error"
-            ? "border-red-400"
-            : "border-slate-200 hover:border-slate-400"
+            ? "border-danger"
+            : "border-line hover:border-faint"
       }`}
       aria-label={`Chọn ảnh ${index + 1}: ${entry.file.name}`}
       onClick={onSelect}
@@ -97,7 +97,7 @@ const ReferenceImageThumbnail = ({
           <Loader2 className="h-5 w-5 animate-spin" />
         </span>
       ) : null}
-    </button>
+    </Button>
   );
 };
 
@@ -313,21 +313,17 @@ export const ProductReferenceCaptureSheet = ({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="max-w-4xl overflow-y-auto">
-        <SheetHeader>
-          <SheetTitle>Ảnh nhận diện</SheetTitle>
-          <SheetDescription>Chụp thêm hoặc xoá ảnh không đúng mã hàng.</SheetDescription>
-        </SheetHeader>
+      <SheetContent title="Ảnh nhận diện" description="Chụp thêm hoặc xoá ảnh không đúng mã hàng." size={896} className="overflow-y-auto">
 
         {product ? (
           <div className="mt-6 space-y-4">
-            <div className="flex items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
-              <div className="flex h-11 w-11 items-center justify-center rounded-md bg-white text-slate-500 shadow-sm">
+            <div className="flex items-center gap-3 rounded-lg border border-line bg-subtle p-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-md bg-surface text-muted shadow-sm">
                 <Package className="h-5 w-5" />
               </div>
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold text-slate-950">{product.name}</p>
-                <p className="truncate text-xs font-medium text-slate-500">{product.product_id}</p>
+                <p className="truncate text-sm font-semibold text-content">{product.name}</p>
+                <p className="truncate text-xs font-medium text-muted">{product.product_id}</p>
               </div>
               <Badge variant={referenceCount > 0 ? "success" : "warning"}>
                 {referenceCount > 0 ? "Đã sẵn sàng" : "Chưa có ảnh"}
@@ -340,18 +336,18 @@ export const ProductReferenceCaptureSheet = ({
               onFilesSelected={appendFiles}
             />
 
-            <p className="text-center text-xs text-slate-500">
+            <p className="text-center text-xs text-muted">
               Có thể chọn nhiều ảnh cùng lúc. Chọn từng ảnh trong danh sách để cắt đúng vùng sản phẩm rồi lưu cả loạt.
             </p>
 
             {queuedImages.length > 0 ? (
-              <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <div className="space-y-4 rounded-xl border border-line bg-subtle p-3">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
-                    <Images className="h-5 w-5 text-blue-600" />
+                    <Images className="h-5 w-5 text-primary" />
                     <div>
-                      <p className="text-sm font-semibold text-slate-950">{queuedImages.length} ảnh chờ lưu</p>
-                      <p className="text-xs text-slate-500">{croppedCount} ảnh đã chọn vùng cắt</p>
+                      <p className="text-sm font-semibold text-content">{queuedImages.length} ảnh chờ lưu</p>
+                      <p className="text-xs text-muted">{croppedCount} ảnh đã chọn vùng cắt</p>
                     </div>
                   </div>
                   <Button
@@ -387,7 +383,7 @@ export const ProductReferenceCaptureSheet = ({
                       onDelete={deleteQueuedImage}
                     />
                     {activeImage.errorMessage ? (
-                      <div className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                      <div className="mt-2 rounded-md border border-danger-border bg-danger-surface px-3 py-2 text-sm text-danger">
                         {activeImage.errorMessage}
                       </div>
                     ) : null}
@@ -407,28 +403,28 @@ export const ProductReferenceCaptureSheet = ({
             ) : null}
 
             {uploading && (
-              <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-700">
+              <div className="rounded-md border border-info-border bg-info-surface px-3 py-2 text-sm text-info">
                 Hệ thống đang xử lý lần lượt từng ảnh.
               </div>
             )}
 
             {batchMessage && (
-              <div className="flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">
+              <div className="flex items-center gap-2 rounded-md border border-success-border bg-success-surface px-3 py-2 text-sm font-medium text-success">
                 <CheckCircle2 className="h-4 w-4" />
                 {batchMessage}
               </div>
             )}
 
             {(errorMessage || detailQuery.error || deleteMutation.error) && (
-              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              <div className="rounded-md border border-danger-border bg-danger-surface px-3 py-2 text-sm text-danger">
                 {errorMessage ?? detailQuery.error?.message ?? deleteMutation.error?.message}
               </div>
             )}
 
-            <div className="border-t border-slate-200 pt-4">
+            <div className="border-t border-line pt-4">
               <div className="mb-3 flex items-center justify-between gap-3">
-                <h3 className="text-sm font-semibold text-slate-950">Ảnh đã lưu</h3>
-                <span className="text-xs text-slate-500">{referenceCount} ảnh</span>
+                <h3 className="text-sm font-semibold text-content">Ảnh đã lưu</h3>
+                <span className="text-xs text-muted">{referenceCount} ảnh</span>
               </div>
 
               {detailQuery.isLoading ? (
@@ -441,7 +437,7 @@ export const ProductReferenceCaptureSheet = ({
                   {detailQuery.data.embeddings.map((embedding, index) => (
                     <div
                       key={embedding.id}
-                      className="relative overflow-hidden rounded-lg border border-slate-200 bg-slate-50"
+                      className="relative overflow-hidden rounded-lg border border-line bg-subtle"
                     >
                       {embedding.image_preview_base64 ? (
                         <img
@@ -450,7 +446,7 @@ export const ProductReferenceCaptureSheet = ({
                           className="aspect-square w-full object-cover"
                         />
                       ) : (
-                        <div className="flex aspect-square w-full items-center justify-center text-slate-400">
+                        <div className="flex aspect-square w-full items-center justify-center text-faint">
                           <ImageOff className="h-6 w-6" />
                         </div>
                       )}
@@ -479,7 +475,7 @@ export const ProductReferenceCaptureSheet = ({
                   ))}
                 </div>
               ) : (
-                <div className="rounded-lg border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-500">
+                <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
                   Chưa có ảnh nhận diện.
                 </div>
               )}

@@ -1,0 +1,18 @@
+/* Solid green actions keep readable white labels in both appearance modes. */
+.app-success-action.ant-btn:not(:disabled):not(.ant-btn-disabled) {
+  color: #fff;
+  background: #166534;
+  border-color: #166534;
+}
+
+.app-success-action.ant-btn:not(:disabled):not(.ant-btn-disabled):hover {
+  color: #fff;
+  background: #15803d;
+  border-color: #15803d;
+}
+
+.app-success-action.ant-btn:not(:disabled):not(.ant-btn-disabled):active {
+  color: #fff;
+  background: #14532d;
+  border-color: #14532d;
+}

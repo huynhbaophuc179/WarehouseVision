@@ -1,51 +1,28 @@
 import * as React from "react";
-import { Slot } from "@radix-ui/react-slot";
-import { cva, type VariantProps } from "class-variance-authority";
-import { cn } from "@/lib/utils";
+import { Button as AntButton } from "antd";
 
-const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 disabled:pointer-events-none disabled:opacity-50",
-  {
-    variants: {
-      variant: {
-        default: "bg-slate-950 text-white hover:bg-slate-800",
-        destructive: "bg-red-600 text-white hover:bg-red-700",
-        outline: "border border-slate-300 bg-white hover:bg-slate-100",
-        secondary: "bg-slate-100 text-slate-900 hover:bg-slate-200",
-        ghost: "hover:bg-slate-100",
-        success: "bg-emerald-600 text-white hover:bg-emerald-700",
-      },
-      size: {
-        default: "h-10 px-4 py-2",
-        sm: "h-8 rounded-md px-3 text-xs",
-        lg: "h-11 rounded-md px-8",
-        icon: "h-10 w-10",
-      },
-    },
-    defaultVariants: {
-      variant: "default",
-      size: "default",
-    },
-  },
-);
-
-export interface ButtonProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
-    VariantProps<typeof buttonVariants> {
-  asChild?: boolean;
+export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  variant?: "default" | "destructive" | "outline" | "secondary" | "ghost" | "success" | null;
+  size?: "default" | "sm" | "lg" | "icon" | null;
 }
 
-export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, asChild = false, ...props }, ref) => {
-    const Comp = asChild ? Slot : "button";
-    return (
-      <Comp
-        className={cn(buttonVariants({ variant, size, className }))}
-        ref={ref}
-        {...props}
-      />
-    );
-  },
-);
+const buttonAppearances = {
+  default: { color: "primary", variant: "solid" },
+  destructive: { color: "danger", variant: "solid" },
+  outline: { color: "default", variant: "outlined" },
+  secondary: { color: "default", variant: "filled" },
+  ghost: { color: "default", variant: "text" },
+  success: { color: "green", variant: "solid" },
+} as const;
 
+const buttonSizes = { default: "middle", sm: "small", lg: "large", icon: "middle" } as const;
+
+export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
+  ({ variant = "default", size, type = "button", ...props }, ref) => (
+    <AntButton {...props} ref={ref} htmlType={type}
+      {...buttonAppearances[variant ?? "default"]}
+      size={buttonSizes[size ?? "default"]}
+      shape={size === "icon" ? "square" : undefined} />
+  ),
+);
 Button.displayName = "Button";

@@ -1,3 +1,4 @@
+import { request } from "./http-request";
 import type {
   DetectionResult,
   DetectionReviewResponse,
@@ -41,6 +42,7 @@ export interface RecognizeImageInput {
   file: File;
   topK: number;
   autoAcceptScoreThreshold: number;
+  signal?: AbortSignal;
 }
 
 export const recognizeImage = async (
@@ -51,9 +53,10 @@ export const recognizeImage = async (
   formData.append("file", input.file);
   formData.append("top_k", String(input.topK));
   formData.append("auto_accept_score_threshold", String(input.autoAcceptScoreThreshold));
-  const response = await fetch(`${apiBaseUrl}/recognize`, {
+  const response = await request(`${apiBaseUrl}/recognize`, {
     method: "POST",
     body: formData,
+    signal: input.signal,
   });
   if (!response.ok) {
     throw new Error(await parseError(response));
@@ -71,7 +74,7 @@ export const fetchProducts = async (
     params.set("search", search.trim());
   }
   params.set("limit", String(limit));
-  const response = await fetch(`${apiBaseUrl}/products?${params.toString()}`);
+  const response = await request(`${apiBaseUrl}/products?${params.toString()}`);
   if (!response.ok) {
     throw new Error(await parseError(response));
   }
@@ -81,7 +84,7 @@ export const fetchProducts = async (
 export const fetchProductCategories = async (
   apiBaseUrl: string,
 ): Promise<ProductCategoryListResponse> => {
-  const response = await fetch(`${apiBaseUrl}/product-categories`);
+  const response = await request(`${apiBaseUrl}/product-categories`);
   if (!response.ok) {
     throw new Error(await parseError(response));
   }
@@ -92,7 +95,7 @@ export const createProductCategory = async (
   apiBaseUrl: string,
   name: string,
 ): Promise<ProductCategory> => {
-  const response = await fetch(`${apiBaseUrl}/product-categories`, {
+  const response = await request(`${apiBaseUrl}/product-categories`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name }),
@@ -108,7 +111,7 @@ export const updateProductCategory = async (
   categoryId: number,
   name: string,
 ): Promise<ProductCategory> => {
-  const response = await fetch(`${apiBaseUrl}/product-categories/${categoryId}`, {
+  const response = await request(`${apiBaseUrl}/product-categories/${categoryId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name }),
@@ -123,7 +126,7 @@ export const deleteProductCategory = async (
   apiBaseUrl: string,
   categoryId: number,
 ): Promise<ProductCategoryDeleteResponse> => {
-  const response = await fetch(`${apiBaseUrl}/product-categories/${categoryId}`, {
+  const response = await request(`${apiBaseUrl}/product-categories/${categoryId}`, {
     method: "DELETE",
   });
   if (!response.ok) {
@@ -154,7 +157,7 @@ export const createProductWithImage = async (
   if (input.file) {
     formData.append("file", input.file);
   }
-  const response = await fetch(`${apiBaseUrl}/products`, {
+  const response = await request(`${apiBaseUrl}/products`, {
     method: "POST",
     body: formData,
   });
@@ -177,7 +180,7 @@ export const addProductEmbedding = async (
   const formData = new FormData();
   formData.append("file", input.file);
   formData.append("use_full_image", String(input.useFullImage ?? true));
-  const response = await fetch(`${apiBaseUrl}/products/${encodeURIComponent(input.productId)}/embeddings`, {
+  const response = await request(`${apiBaseUrl}/products/${encodeURIComponent(input.productId)}/embeddings`, {
     method: "POST",
     body: formData,
   });
@@ -198,7 +201,7 @@ export const captureProductReference = async (
 ): Promise<ProductReferenceCapture> => {
   const formData = new FormData();
   formData.append("file", input.file);
-  const response = await fetch(
+  const response = await request(
     `${apiBaseUrl}/products/${encodeURIComponent(input.productId)}/capture-reference`,
     {
       method: "POST",
@@ -227,7 +230,7 @@ export const batchImportProducts = async (
     formData.append("file_anh", input.imagesZipFile);
   }
   formData.append("dry_run", String(input.dryRun));
-  const response = await fetch(`${apiBaseUrl}/products/batch-import`, {
+  const response = await request(`${apiBaseUrl}/products/batch-import`, {
     method: "POST",
     body: formData,
   });
@@ -241,7 +244,7 @@ export const fetchProductDetail = async (
   apiBaseUrl: string,
   productId: string,
 ): Promise<ProductDetail> => {
-  const response = await fetch(`${apiBaseUrl}/products/${encodeURIComponent(productId)}`);
+  const response = await request(`${apiBaseUrl}/products/${encodeURIComponent(productId)}`);
   if (!response.ok) {
     throw new Error(await parseError(response));
   }
@@ -258,7 +261,7 @@ export const updateProductMetadata = async (
   apiBaseUrl: string,
   input: UpdateProductMetadataInput,
 ): Promise<Product> => {
-  const response = await fetch(`${apiBaseUrl}/products/${encodeURIComponent(input.productId)}`, {
+  const response = await request(`${apiBaseUrl}/products/${encodeURIComponent(input.productId)}`, {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
@@ -279,7 +282,7 @@ export const deleteProductEmbedding = async (
   productId: string,
   embeddingId: number,
 ): Promise<ProductEmbeddingDeleteResponse> => {
-  const response = await fetch(
+  const response = await request(
     `${apiBaseUrl}/products/${encodeURIComponent(productId)}/embeddings/${embeddingId}`,
     { method: "DELETE" },
   );
@@ -293,7 +296,7 @@ export const deleteProduct = async (
   apiBaseUrl: string,
   productId: string,
 ): Promise<ProductDeleteResponse> => {
-  const response = await fetch(`${apiBaseUrl}/products/${encodeURIComponent(productId)}`, {
+  const response = await request(`${apiBaseUrl}/products/${encodeURIComponent(productId)}`, {
     method: "DELETE",
   });
   if (!response.ok) {
@@ -302,9 +305,16 @@ export const deleteProduct = async (
   return (await response.json()) as ProductDeleteResponse;
 };
 
+export class InventoryRequestError extends Error {
+  constructor(public readonly status: number) {
+    super("Không thể xác nhận giao dịch kho.");
+  }
+}
+
 export const confirmInventory = async (
   apiBaseUrl: string,
   payload: InventoryConfirmRequest,
+  signal?: AbortSignal,
 ): Promise<InventoryConfirmResponse> => {
   const response = await fetch(`${apiBaseUrl}/inventory/confirm`, {
     method: "POST",
@@ -312,9 +322,10 @@ export const confirmInventory = async (
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
+    signal,
   });
   if (!response.ok) {
-    throw new Error(await parseError(response));
+    throw new InventoryRequestError(response.status);
   }
   return (await response.json()) as InventoryConfirmResponse;
 };
@@ -325,7 +336,7 @@ export const fetchReviewSessions = async (
 ): Promise<RecognitionSessionSummary[]> => {
   const params = new URLSearchParams();
   params.set("limit", String(limit));
-  const response = await fetch(`${apiBaseUrl}/review/sessions?${params.toString()}`);
+  const response = await request(`${apiBaseUrl}/review/sessions?${params.toString()}`);
   if (!response.ok) {
     throw new Error(await parseError(response));
   }
@@ -336,7 +347,7 @@ export const fetchReviewSession = async (
   apiBaseUrl: string,
   sessionId: number,
 ): Promise<RecognitionSessionDetail> => {
-  const response = await fetch(`${apiBaseUrl}/review/sessions/${sessionId}`);
+  const response = await request(`${apiBaseUrl}/review/sessions/${sessionId}`);
   if (!response.ok) {
     throw new Error(await parseError(response));
   }
@@ -348,7 +359,7 @@ export const updateDetectionReview = async (
   reviewId: number,
   payload: DetectionReviewUpdateRequest,
 ): Promise<DetectionReviewResponse> => {
-  const response = await fetch(`${apiBaseUrl}/review/detections/${reviewId}`, {
+  const response = await request(`${apiBaseUrl}/review/detections/${reviewId}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -365,7 +376,7 @@ export const deleteReviewSession = async (
   apiBaseUrl: string,
   sessionId: number,
 ): Promise<RecognitionSessionDeleteResponse> => {
-  const response = await fetch(`${apiBaseUrl}/review/sessions/${sessionId}`, {
+  const response = await request(`${apiBaseUrl}/review/sessions/${sessionId}`, {
     method: "DELETE",
   });
   if (!response.ok) {
@@ -381,7 +392,7 @@ export const addManualDetection = async (
 ): Promise<RecognitionSessionDetail["detections"][number]> => {
   let response: Response;
   try {
-    response = await fetch(`${apiBaseUrl}/review/sessions/${sessionId}/manual-detection`, {
+    response = await request(`${apiBaseUrl}/review/sessions/${sessionId}/manual-detection`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -389,7 +400,7 @@ export const addManualDetection = async (
       body: JSON.stringify(payload),
     });
   } catch {
-    throw new Error("Không kết nối được API để lưu vùng. Hãy kiểm tra backend đang chạy và cấu hình API URL.");
+    throw new Error("Không kết nối được máy chủ để lưu vùng. Vui lòng kiểm tra kết nối và thử lại.");
   }
   if (!response.ok) {
     throw new Error(await parseError(response));
@@ -401,7 +412,7 @@ export const deleteReviewDetection = async (
   apiBaseUrl: string,
   reviewId: number,
 ): Promise<ReviewDetectionDeleteResponse> => {
-  const response = await fetch(`${apiBaseUrl}/review/detections/${reviewId}`, {
+  const response = await request(`${apiBaseUrl}/review/detections/${reviewId}`, {
     method: "DELETE",
   });
   if (!response.ok) {

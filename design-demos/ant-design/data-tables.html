@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>So sánh thiết kế bảng và bộ lọc</title>
+  <link rel="stylesheet" href="../../src/styles/appearance.css">
+  <link rel="stylesheet" href="../../src/styles/header-navigation.css">
+  <link rel="stylesheet" href="data-tables.css">
+</head>
+<body>
+  <!-- Design exploration only. All counts derive from the same local fixtures.
+       Preserve approved navigation and domain filters. No API or inventory writes. -->
+  <section class="prototype-toolbar" aria-label="Điều khiển bản nháp">
+    <div class="prototype-label"><strong>Bảng và bộ lọc</strong><span>Dữ liệu minh họa</span></div>
+    <div class="direction-switcher" role="group" aria-label="Phương án bố trí">
+      <button data-direction="1" aria-pressed="true">1. Bộ lọc ngang <span>Đề xuất</span></button>
+      <button data-direction="2" aria-pressed="false">2. Bộ lọc bên trái</button>
+      <button data-direction="3" aria-pressed="false">3. Bộ lọc thu gọn</button>
+    </div>
+  </section>
+  <div id="app"></div>
+  <dialog id="preview-dialog" aria-labelledby="dialog-title" aria-describedby="dialog-copy">
+    <div class="dialog-heading"><h2 id="dialog-title"></h2><button class="icon-button" data-close aria-label="Đóng hộp thoại">×</button></div>
+    <p id="dialog-copy"></p><div id="dialog-details"></div>
+    <div class="dialog-footer"><button data-close>Đóng</button></div>
+  </dialog>
+  <script src="data-tables-fixtures.js"></script>
+  <script src="data-tables-render.js"></script>
+  <script src="data-tables.js"></script>
+</body>
+</html>

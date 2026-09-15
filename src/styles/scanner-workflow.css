@@ -1,0 +1,64 @@
+.scanner-theme .scanner-workflow {
+  display: flex; flex-direction: column; gap: 16px; padding: 24px;
+}
+.scanner-theme .scanner-workflow h2 {
+  margin: 0; font-size: 24px; font-weight: 600; line-height: 1.3;
+}
+.scanner-theme .scanner-workflow h3 { margin: 0; font-size: 20px; font-weight: 500; }
+.scanner-theme .scanner-workflow p { margin: 0; overflow-wrap: anywhere; }
+.scanner-theme .scanner-workflow header p { margin-top: 8px; color: var(--scanner-muted); }
+.scanner-theme .scanner-workflow__hint { color: var(--scanner-muted); font-size: 14px; }
+.scanner-theme .scanner-workflow__error { color: var(--scanner-notification); }
+.scanner-theme .scanner-workflow__actions { display: grid; gap: 16px; }
+.scanner-theme .scanner-stock-actions {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px;
+}
+.scanner-theme .scanner-stock-actions .scanner-stock-choice.ant-btn {
+  position: relative; display: flex; justify-content: center; align-items: center;
+  min-width: 0; min-height: 160px; padding: 40px 12px 20px; font-size: 20px; font-weight: 600;
+}
+.scanner-theme .scanner-stock-choice .scanner-action__key { position: absolute; top: 12px; left: 12px; }
+.scanner-theme .scanner-stock-choice .scanner-action__label {
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+}
+.scanner-theme .scanner-stock-choice .scanner-action__balance { display: none; }
+.scanner-theme .scanner-stock-choice--out.ant-btn { background: #237804; border-color: #237804; color: #fff; }
+.scanner-theme .scanner-stock-choice--out.ant-btn:not(:disabled):hover { background: #389e0d; border-color: #389e0d; color: #fff; }
+.scanner-theme .scanner-stock-choice--out.ant-btn:not(:disabled):active { background: #135200; border-color: #135200; }
+.scanner-theme .scanner-workflow__notice { padding: 24px 32px 0; margin: 0; color: var(--scanner-notification); }
+.scanner-theme .scanner-quantity-input,
+.scanner-theme .scanner-product-search input {
+  width: 100%; min-width: 0; min-height: 48px; padding: 12px 16px;
+  border: 1px solid var(--scanner-border); border-radius: 8px;
+  background: var(--scanner-surface); color: var(--scanner-text); font: inherit;
+}
+.scanner-theme .scanner-quantity-input { font-size: 28px; font-variant-numeric: tabular-nums; }
+.scanner-theme .scanner-quantity-input[aria-invalid="true"] { border-color: var(--scanner-notification); }
+.scanner-theme .scanner-product-search { display: grid; gap: 12px; }
+.scanner-theme .scanner-product-search > span { display: flex; gap: 12px; align-items: center; }
+.scanner-theme .scanner-product-picker { display: grid; gap: 12px; }
+.scanner-theme .scanner-product-choice {
+  display: flex; align-items: center; gap: 12px; height: auto; min-height: 80px; padding: 12px; white-space: normal;
+  width: 100%; min-width: 0; text-align: left; border: 1px solid var(--scanner-border);
+  border-radius: 8px; background: var(--scanner-surface); color: var(--scanner-text);
+}
+.scanner-theme .scanner-product-choice:hover { border-color: var(--scanner-primary); background: var(--scanner-selected); }
+.scanner-theme .scanner-product-choice:active { background: rgb(var(--color-selected-pressed)); }
+.scanner-theme .scanner-product-choice .scanner-product-row__heading { align-items: flex-start; flex-direction: column; gap: 4px; }
+.scanner-theme .scanner-product-choice .scanner-product-row__name { max-width: 100%; }
+.scanner-theme .scanner-product-choice .scanner-product-row__code { max-width: 100%; }
+.scanner-theme .scanner-product-choice .scanner-product-row__image { width: 48px; height: 48px; flex-basis: 48px; }
+.scanner-theme .scanner-product-pages { display: grid; gap: 12px; }
+.scanner-theme .scanner-product-pages > span { text-align: center; font-size: 16px; color: var(--scanner-muted); }
+.scanner-theme .scanner-workflow__result-heading { display: flex; align-items: center; gap: 12px; }
+.scanner-theme .scanner-workflow__result-heading svg { flex-shrink: 0; }
+.scanner-theme .scanner-workflow__message { white-space: pre-wrap; }
+.scanner-theme .scanner-workflow--result .scanner-receipt__table-scroll { max-height: 40dvh; }
+@media (min-width: 640px) {
+  .scanner-theme .scanner-workflow { padding: 24px; gap: 20px; }
+  .scanner-theme .scanner-workflow__actions { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .scanner-theme .scanner-product-pages { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; }
+  .scanner-theme .scanner-product-choice .scanner-product-row__heading { flex-direction: row; align-items: center; gap: 8px; }
+  .scanner-theme .scanner-product-choice .scanner-product-row__code { max-width: 42%; }
+  .scanner-theme .scanner-product-choice .scanner-product-row__image { width: 64px; height: 64px; flex-basis: 64px; }
+}

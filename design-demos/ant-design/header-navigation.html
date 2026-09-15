@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>So sánh thiết kế thanh điều hướng</title>
+  <link rel="stylesheet" href="header-navigation.css">
+</head>
+<body>
+  <!-- Three draft directions only. Horizontal navigation, no logo, no application state or API. -->
+  <main>
+    <div class="page-heading"><p>THIẾT KẾ THANH ĐIỀU HƯỚNG</p><h1>Gọn hơn. Dễ biết mình đang ở đâu.</h1></div>
+    <section class="board" aria-labelledby="title-a">
+      <div class="board-heading"><h2 id="title-a"><span>01</span> Nền xanh nhạt + gạch chân</h2><span class="recommendation">Đề xuất</span></div>
+      <div class="preview">
+        <header class="navigation underline">
+          <nav aria-label="Phương án 1">
+            <button aria-current="page">Kiểm kho</button><button>Mã hàng</button><button>Phân loại</button><button>Quản lý phiên</button><button>Bổ sung vùng</button>
+          </nav>
+          <button class="settings" aria-label="Xem Cài đặt trong phương án 1">Cài đặt</button>
+        </header>
+        <div class="workspace-hint" aria-hidden="true"><span>Kiểm kho</span><div></div></div>
+      </div>
+      <p class="rationale">Nền xanh nhạt tách điều hướng khỏi nội dung; gạch chân làm rõ mục đang chọn.</p>
+    </section>
+    <section class="board" aria-labelledby="title-b">
+      <div class="board-heading"><h2 id="title-b"><span>02</span> Nền chọn nhẹ</h2></div>
+      <div class="preview">
+        <header class="navigation soft">
+          <nav aria-label="Phương án 2">
+            <button aria-current="page">Kiểm kho</button><button>Mã hàng</button><button>Phân loại</button><button>Quản lý phiên</button><button>Bổ sung vùng</button>
+          </nav>
+          <button class="settings" aria-label="Xem Cài đặt trong phương án 2">Cài đặt</button>
+        </header>
+        <div class="workspace-hint" aria-hidden="true"><span>Kiểm kho</span><div></div></div>
+      </div>
+      <p class="rationale">Vùng chọn nổi bật hơn khi nhìn nhanh; tạo cảm giác gần với nút bấm.</p>
+    </section>
+    <section class="board" aria-labelledby="title-c">
+      <div class="board-heading"><h2 id="title-c"><span>03</span> Phân nhóm tác vụ</h2></div>
+      <div class="preview">
+        <header class="navigation grouped">
+          <nav aria-label="Phương án 3">
+            <button class="scanner" aria-current="page">Kiểm kho</button><span class="divider" aria-hidden="true"></span><button>Mã hàng</button><button>Phân loại</button><button>Quản lý phiên</button><button>Bổ sung vùng</button>
+          </nav>
+          <button class="settings" aria-label="Xem Cài đặt trong phương án 3">Cài đặt</button>
+        </header>
+        <div class="workspace-hint" aria-hidden="true"><span>Kiểm kho</span><div></div></div>
+      </div>
+      <p class="rationale">Tách Kiểm kho khỏi các mục hỗ trợ bằng một đường phân cách; vẫn cùng một hàng.</p>
+    </section>
+    <p class="page-note">Bản nháp thiết kế · Nhấn các mục để thử trạng thái chọn.</p>
+  </main>
+  <script>
+    const svg = content => `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${content}</svg>`;
+    const gear = svg('<path d="M12.22 2h-.44a2 2 0 0 0-2 1.72l-.12.86a2 2 0 0 1-.98 1.45l-.19.11a2 2 0 0 1-1.75.13l-.81-.3a2 2 0 0 0-2.48.85l-.22.38a2 2 0 0 0 .48 2.58l.69.55a2 2 0 0 1 .77 1.57v.22a2 2 0 0 1-.77 1.57l-.69.55a2 2 0 0 0-.48 2.58l.22.38a2 2 0 0 0 2.48.85l.81-.3a2 2 0 0 1 1.75.13l.19.11a2 2 0 0 1 .98 1.45l.12.86a2 2 0 0 0 2 1.72h.44a2 2 0 0 0 2-1.72l.12-.86a2 2 0 0 1 .98-1.45l.19-.11a2 2 0 0 1 1.75-.13l.81.3a2 2 0 0 0 2.48-.85l.22-.39a2 2 0 0 0-.48-2.58l-.69-.54a2 2 0 0 1-.77-1.57v-.22a2 2 0 0 1 .77-1.57l.69-.55a2 2 0 0 0 .48-2.58l-.22-.38a2 2 0 0 0-2.48-.85l-.81.3a2 2 0 0 1-1.75-.13l-.19-.11a2 2 0 0 1-.98-1.45l-.12-.86a2 2 0 0 0-2-1.72Z"/><circle cx="12" cy="12" r="3"/>');
+    const moon = svg('<path d="M20.985 12.486A9 9 0 1 1 11.51 3.01a7 7 0 0 0 9.475 9.476Z"/>');
+    const sun = svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/>');
+    function renderThemeButtons() {
+      const dark = document.documentElement.dataset.theme === 'dark';
+      document.querySelectorAll('.theme-toggle').forEach(button => {
+        const label = dark ? 'Chuyển sang giao diện sáng' : 'Chuyển sang giao diện tối';
+        button.innerHTML = dark ? sun : moon;
+        button.setAttribute('aria-label', label);
+        button.title = label;
+      });
+    }
+    document.querySelectorAll('.navigation').forEach(header => {
+      const buttons = header.querySelectorAll('nav button');
+      const caption = header.parentElement.querySelector('.workspace-hint span');
+      const settings = header.querySelector('.settings');
+      const actions = document.createElement('div');
+      actions.className = 'header-actions';
+      header.append(actions);
+      const themeToggle = document.createElement('button');
+      themeToggle.className = 'theme-toggle';
+      actions.append(themeToggle, settings);
+      settings.innerHTML = gear;
+      settings.title = 'Cài đặt';
+      settings.setAttribute('aria-label', 'Cài đặt');
+      settings.setAttribute('aria-pressed', 'false');
+      settings.addEventListener('click', () => {
+        const pressed = settings.getAttribute('aria-pressed') !== 'true';
+        settings.setAttribute('aria-pressed', String(pressed));
+        caption.textContent = pressed ? 'Cài đặt · bản nháp' : header.querySelector('nav [aria-current="page"]').textContent;
+      });
+      themeToggle.addEventListener('click', () => {
+        document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+        renderThemeButtons();
+      });
+      buttons.forEach(button => button.addEventListener('click', () => {
+        buttons.forEach(item => item.removeAttribute('aria-current'));
+        button.setAttribute('aria-current', 'page');
+        settings.setAttribute('aria-pressed', 'false');
+        caption.textContent = button.textContent;
+      }));
+    });
+    renderThemeButtons();
+  </script>
+</body>
+</html>

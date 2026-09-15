@@ -30,7 +30,7 @@ const statusVariant = (status: DetectionResult["status"]): "success" | "warning"
 };
 
 const decisionButtonClass = (active: boolean): string =>
-  active ? "border-slate-950 bg-slate-950 text-white hover:bg-slate-800" : "";
+  active ? "border-primary bg-action text-action-content hover:bg-action-hover" : "";
 
 export const DetectionResultCard = ({
   index,
@@ -57,17 +57,17 @@ export const DetectionResultCard = ({
     <Card
       className={cn(
         "cursor-pointer transition-colors",
-        selected ? "border-slate-950 ring-2 ring-slate-950/10" : "border-slate-200",
+        selected ? "border-content ring-2 ring-content/10" : "border-line",
       )}
       onClick={onSelect}
     >
       <CardContent className="p-3">
         <div className="flex gap-3">
-          <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded-md border border-slate-200 bg-slate-100">
+          <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded-md border border-line bg-inset">
             {cropSrc ? (
               <img src={cropSrc} alt={`Vùng ${index}`} className="h-full w-full object-cover" />
             ) : (
-              <div className="flex h-full w-full items-center justify-center text-xs text-slate-400">
+              <div className="flex h-full w-full items-center justify-center text-xs text-faint">
                 Không có ảnh
               </div>
             )}
@@ -78,23 +78,23 @@ export const DetectionResultCard = ({
           <div className="min-w-0 flex-1">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
-                <p className="truncate text-sm font-semibold text-slate-950">{productName}</p>
-                <p className="truncate text-xs text-slate-500">Mã: {productId}</p>
+                <p className="truncate text-sm font-semibold text-content">{productName}</p>
+                <p className="truncate text-xs text-muted">Mã: {productId}</p>
               </div>
               <Badge variant={statusVariant(detection.status)}>{statusLabel(detection.status)}</Badge>
             </div>
             <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
               <div>
-                <p className="text-slate-400">Tồn kho</p>
-                <p className="font-semibold text-slate-950">{detection.inventory_count ?? "-"}</p>
+                <p className="text-faint">Tồn kho</p>
+                <p className="font-semibold text-content">{detection.inventory_count ?? "-"}</p>
               </div>
               <div>
-                <p className="text-slate-400">Tin cậy</p>
-                <p className="font-semibold text-slate-950">{confidenceLevelLabel(detection.confidence_level)}</p>
+                <p className="text-faint">Tin cậy</p>
+                <p className="font-semibold text-content">{confidenceLevelLabel(detection.confidence_level)}</p>
               </div>
               <div>
-                <p className="text-slate-400">Độ chắc vùng</p>
-                <p className="font-semibold text-slate-950">{formatPercent(detection.detector_confidence)}</p>
+                <p className="text-faint">Độ chắc vùng</p>
+                <p className="font-semibold text-content">{formatPercent(detection.detector_confidence)}</p>
               </div>
             </div>
           </div>
@@ -152,17 +152,17 @@ export const DetectionResultCard = ({
         </div>
         {candidates.length > 0 && (
           <div className="mt-3 space-y-2">
-            <p className="text-xs font-medium text-slate-500">Gợi ý sản phẩm</p>
+            <p className="text-xs font-medium text-muted">Gợi ý sản phẩm</p>
             <div className="space-y-1">
               {candidates.map((candidate) => (
-                <button
+                <Button variant="outline"
                   key={`${detection.detection_id}-${candidate.product_id}`}
                   type="button"
                   className={cn(
                     "flex w-full items-center justify-between rounded-md border px-2 py-1.5 text-left text-xs transition-colors",
                     state.selectedProductId === candidate.product_id
-                      ? "border-slate-950 bg-slate-950 text-white"
-                      : "border-slate-200 hover:bg-slate-50",
+                      ? "border-primary bg-action text-action-content"
+                      : "border-line hover:bg-subtle",
                   )}
                   onClick={(event) => {
                     event.stopPropagation();
@@ -171,14 +171,14 @@ export const DetectionResultCard = ({
                 >
                   <span className="truncate font-medium">{candidate.name}</span>
                   <span>{formatNumber(candidate.final_score ?? candidate.image_similarity_score ?? null, 2)}</span>
-                </button>
+                </Button>
               ))}
             </div>
           </div>
         )}
         {state.decision === "accepted" || state.decision === "corrected" ? (
           <div className="mt-3">
-            <Label className="text-xs text-slate-500" htmlFor={`qty-${detection.detection_id}`}>
+            <Label className="text-xs text-muted" htmlFor={`qty-${detection.detection_id}`}>
               Số lượng
             </Label>
             <Input

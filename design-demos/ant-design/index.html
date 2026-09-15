@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ba bố cục rà soát kiểm kho</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Bản nháp đã được cho phép: cùng dữ liệu minh họa, ba bố cục; không API hoặc cập nhật tồn kho. -->
+  <main class="comparison">
+    <header class="comparison-header">
+      <div><p class="eyebrow">NGHIÊN CỨU BỐ CỤC</p><h1>Một luồng kiểm kho. Ba cách rà soát.</h1></div>
+      <span class="draft-badge">Đã chọn hướng cân bằng</span>
+    </header>
+    <div class="directions" role="group" aria-label="Chọn bố cục">
+      <button data-layout="balanced" aria-pressed="true"><span>01</span><strong>Cân bằng</strong><small>Ảnh và danh sách song song</small></button>
+      <button data-layout="image" aria-pressed="false"><span>02</span><strong>Ưu tiên ảnh</strong><small>Ảnh lớn, mặt hàng phía dưới</small></button>
+      <button data-layout="table" aria-pressed="false"><span>03</span><strong>Ưu tiên bảng</strong><small>Danh sách rộng, ảnh đối chiếu</small></button>
+    </div>
+    <p class="tradeoff" id="tradeoff">Cân bằng việc nhìn ảnh và đối chiếu từng mặt hàng; diện tích ảnh vừa phải.</p>
+    <section class="app balanced" id="app" aria-label="Bản nháp giao diện kiểm kho">
+      <div class="draft-banner">Bản nháp bố cục · Dữ liệu minh họa · Chưa kết nối kho</div>
+      <header class="app-nav">
+        <nav aria-label="Điều hướng chính">
+          <button class="nav-active" aria-current="page">Kiểm kho</button><button>Mã hàng</button><button>Phân loại</button><button>Quản lý phiên</button><button>Bổ sung vùng</button>
+        </nav>
+        <button class="settings">Cài đặt</button>
+      </header>
+      <div class="workspace-title"><div><p class="eyebrow">KIỂM KHO / RÀ SOÁT</p><h2>Đối chiếu ảnh và mặt hàng</h2></div></div>
+      <div class="workspace">
+        <section class="image-panel" aria-label="Ảnh đối chiếu">
+          <div class="panel-heading"><h3>Ảnh đối chiếu</h3></div>
+          <div class="image-placeholder">
+            <div class="placeholder-caption"><span class="image-symbol" aria-hidden="true">▧</span><strong>Ảnh minh họa bố cục</strong><span>Chưa dùng ảnh kho</span></div>
+            <button class="region r1 selected" data-product="0" aria-label="Chọn vùng 1, nút nhấn xanh" aria-pressed="true"><span>1</span></button>
+            <button class="region r2" data-product="1" aria-label="Chọn vùng 2, đèn báo đỏ" aria-pressed="false"><span>2</span></button>
+            <button class="region r3" data-product="2" aria-label="Chọn vùng 3, đầu nối dây" aria-pressed="false"><span>3</span></button>
+          </div>
+        </section>
+        <section class="items-panel" aria-label="Mặt hàng minh họa">
+          <div class="panel-heading"><h3>Mặt hàng trong ảnh</h3><span>3 mặt hàng</span></div>
+          <div class="table-head" aria-hidden="true"><span>Chọn</span><span>Mặt hàng / Mã hàng</span><span>Số lượng</span><span>Rà soát</span></div>
+          <div class="item-list" id="item-list"></div>
+        </section>
+      </div>
+      <footer class="workspace-footer"><div class="keyboard-help"><span><kbd>1</kbd>–<kbd>3</kbd> Chọn mặt hàng</span><span><kbd>0</kbd> Đặt lại lựa chọn</span></div><button class="primary" id="receipt-trigger">Xem phiếu minh họa <kbd>↵</kbd></button></footer>
+      <p class="local-message" id="local-message" role="status"></p>
+      <span class="sr-only" id="selection-status" role="status"></span>
+    </section>
+    <p class="comparison-note">Ba bố cục dùng cùng dữ liệu và nguyên tắc trình bày. Chọn hướng dựa trên cách bạn đối chiếu hàng thực tế.</p>
+  </main>
+  <dialog id="receipt" aria-labelledby="receipt-title">
+    <p class="eyebrow">CHƯA KẾT NỐI KHO</p><h2 id="receipt-title">Phiếu minh họa</h2>
+    <dl><div><dt>Nút nhấn xanh</dt><dd>4 chiếc</dd></div><div><dt>Đèn báo đỏ</dt><dd>2 chiếc</dd></div><div><dt>Đầu nối dây</dt><dd>6 chiếc</dd></div></dl>
+    <button class="primary" id="receipt-close">Quay lại rà soát <kbd>0</kbd></button>
+  </dialog>
+  <script>
+    const products = [
+      { name: 'Nút nhấn xanh', code: 'NUT_XANH_01', quantity: 4 },
+      { name: 'Đèn báo đỏ', code: 'DEN_DO_02', quantity: 2 },
+      { name: 'Đầu nối dây', code: 'DAU_NOI_03', quantity: 6 }
+    ];
+    const tradeoffs = {
+      balanced: 'Cân bằng việc nhìn ảnh và đối chiếu từng mặt hàng; diện tích ảnh vừa phải.',
+      image: 'Ưu tiên nhìn rõ vùng sản phẩm; danh sách phía dưới phù hợp khi có ít mặt hàng.',
+      table: 'Ưu tiên đối chiếu mã và số lượng trên nhiều dòng; ảnh bên cạnh có diện tích nhỏ hơn.'
+    };
+    const app = document.querySelector('#app');
+    const receipt = document.querySelector('#receipt');
+    const message = document.querySelector('#local-message');
+    let selected = 0;
+    document.querySelector('#item-list').innerHTML = products.map((product, index) => `
+      <button class="product-row ${index === 0 ? 'selected' : ''}" data-product="${index}" aria-pressed="${index === 0}">
+        <kbd>${index + 1}</kbd><span class="product-name"><strong>${product.name}</strong><small>${product.code}</small></span>
+        <span class="quantity"><strong>${product.quantity}</strong><small>chiếc</small></span><span class="row-status">${index === 0 ? 'Đang chọn' : 'Chọn xem'}</span>
+      </button>`).join('');
+    function selectProduct(index) {
+      selected = index;
+      document.querySelectorAll('[data-product]').forEach(button => {
+        const active = Number(button.dataset.product) === index;
+        button.classList.toggle('selected', active);
+        button.setAttribute('aria-pressed', String(active));
+        const status = button.querySelector('.row-status');
+        if (status) status.textContent = active ? 'Đang chọn' : 'Chọn xem';
+      });
+      document.querySelector('#selection-status').textContent = `Đã chọn ${products[index].name}, ${products[index].quantity} chiếc`;
+    }
+    document.querySelectorAll('[data-product]').forEach(button => button.addEventListener('click', () => selectProduct(Number(button.dataset.product))));
+    document.querySelectorAll('[data-layout]').forEach(button => button.addEventListener('click', () => {
+      app.className = `app ${button.dataset.layout}`;
+      document.querySelector('#tradeoff').textContent = tradeoffs[button.dataset.layout];
+      document.querySelectorAll('[data-layout]').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
+    }));
+    function openReceipt() { if (!receipt.open) receipt.showModal(); }
+    document.querySelector('#receipt-trigger').addEventListener('click', openReceipt);
+    document.querySelector('#receipt-close').addEventListener('click', () => receipt.close());
+    document.querySelectorAll('.app-nav button').forEach(button => button.addEventListener('click', () => {
+      message.textContent = button.classList.contains('nav-active') ? 'Bạn đang xem bản nháp màn rà soát kiểm kho.' : `${button.textContent}: chỉ minh họa vị trí điều hướng, chưa dựng nội dung trang.`;
+    }));
+    document.addEventListener('keydown', event => {
+      if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
+      if (receipt.open) {
+        if (event.key === '0') { event.preventDefault(); receipt.close(); }
+        return;
+      }
+      if (['1', '2', '3'].includes(event.key)) {
+        event.preventDefault();
+        selectProduct(Number(event.key) - 1);
+        document.querySelector(`#item-list [data-product="${selected}"]`).focus();
+      }
+      if (event.key === '0') { event.preventDefault(); selectProduct(0); message.textContent = 'Đã chọn mặt hàng 1.'; }
+      // Select a newly focused row first; Enter on the selected row previews the receipt.
+      const focusedProduct = event.target.closest('[data-product]');
+      if (event.key === 'Enter' && (!event.target.closest('button') ||
+        (focusedProduct && Number(focusedProduct.dataset.product) === selected))) {
+        event.preventDefault(); openReceipt();
+      }
+    });
+  </script>
+</body>
+</html>

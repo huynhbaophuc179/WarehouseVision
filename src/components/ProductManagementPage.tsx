@@ -1,14 +1,13 @@
+import { ProductManagementTable } from "@/components/product-management-table";
+import { Button as AntButton, Checkbox, Select, Table } from "antd";
+import { ManagementPage } from "@/components/management-page";
+import { ManagementFilterField, ManagementFilters } from "@/components/management-filters";
+import { ManagementPagination } from "@/components/management-pagination";
+import { getPaginationBounds } from "@/lib/management-list";
 import {
-  Boxes,
-  Camera,
-  Eye,
   FileDown,
-  Image,
   Loader2,
-  Package,
   Plus,
-  Search,
-  Tags,
   UploadCloud,
   X,
 } from "lucide-react";
@@ -19,9 +18,14 @@ import { CameraImageCapture } from "@/components/CameraImageCapture";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Skeleton } from "@/components/ui/skeleton";
-import { ProductImageCropCard, type ProductImageEntry } from "@/components/ProductImageCropCard";
+import {
+  Sheet,
+  SheetContent,
+} from "@/components/ui/sheet";
+import {
+  ProductImageCropCard,
+  type ProductImageEntry,
+} from "@/components/ProductImageCropCard";
 import { ProductDetailSheet } from "@/components/ProductDetailSheet";
 import { ProductReferenceCaptureSheet } from "@/components/ProductReferenceCaptureSheet";
 import {
@@ -31,7 +35,6 @@ import {
   fetchProductCategories,
   fetchProducts,
 } from "@/lib/api";
-import { cn } from "@/lib/utils";
 import type {
   Product,
   ProductBatchImportResponse,
@@ -45,8 +48,6 @@ export interface ProductManagementPageProps {
 
 type ImageFilter = "all" | "missing" | "with_image";
 type StockFilter = "all" | "available" | "low" | "empty";
-
-const pageSize = 20;
 
 interface NewProductFormState {
   productId: string;
@@ -68,31 +69,6 @@ const stockFilterOptions: { value: StockFilter; label: string }[] = [
   { value: "low", label: "Sắp hết" },
   { value: "empty", label: "Hết hàng" },
 ];
-
-const imageSrc = (base64?: string | null): string | null =>
-  base64 ? `data:image/jpeg;base64,${base64}` : null;
-
-const productGridClass = "flex items-center";
-
-const stockTone = (product: Product): "success" | "warning" | "destructive" => {
-  if (product.inventory_count <= 0) {
-    return "destructive";
-  }
-  if (product.inventory_count <= 5) {
-    return "warning";
-  }
-  return "success";
-};
-
-const stockLabel = (product: Product): string => {
-  if (product.inventory_count <= 0) {
-    return "Hết hàng";
-  }
-  if (product.inventory_count <= 5) {
-    return "Sắp hết";
-  }
-  return "Còn hàng";
-};
 
 const importStatusLabel = (status: ProductBatchImportRow["status"]): string => {
   if (status === "created") {
@@ -131,14 +107,18 @@ const filterProducts = (
   const filtered = products.filter((product) => {
     const imageMatched =
       imageFilter === "all" ||
-      (imageFilter === "with_image" && (product.reference_image_count ?? 0) > 0) ||
+      (imageFilter === "with_image" &&
+        (product.reference_image_count ?? 0) > 0) ||
       (imageFilter === "missing" && (product.reference_image_count ?? 0) === 0);
     const categoryMatched =
-      categoryFilter === "all" || (product.category?.trim() || "Chưa phân loại") === categoryFilter;
+      categoryFilter === "all" ||
+      (product.category?.trim() || "Chưa phân loại") === categoryFilter;
     const stockMatched =
       stockFilter === "all" ||
       (stockFilter === "available" && product.inventory_count > 5) ||
-      (stockFilter === "low" && product.inventory_count > 0 && product.inventory_count <= 5) ||
+      (stockFilter === "low" &&
+        product.inventory_count > 0 &&
+        product.inventory_count <= 5) ||
       (stockFilter === "empty" && product.inventory_count <= 0);
     return imageMatched && categoryMatched && stockMatched;
   });
@@ -147,25 +127,10 @@ const filterProducts = (
     const nameDifference = first.name.localeCompare(second.name, "vi", {
       sensitivity: "base",
     });
-    return nameDifference || first.product_id.localeCompare(second.product_id, "vi");
+    return (
+      nameDifference || first.product_id.localeCompare(second.product_id, "vi")
+    );
   });
-};
-
-const ProductImageCell = ({ product }: { product: Product }): JSX.Element => {
-  const src = imageSrc(product.thumbnail_base64);
-
-  return (
-    <div
-      className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-md border border-slate-200 bg-slate-50"
-      title={src ? product.name : "Sản phẩm này chưa có ảnh tham chiếu"}
-    >
-      {src ? (
-        <img src={src} alt={product.name} className="h-10 w-10 rounded-md object-cover" />
-      ) : (
-        <Package className="h-4 w-4 text-slate-400" />
-      )}
-    </div>
-  );
 };
 
 const createImageEntryId = (): string =>
@@ -181,12 +146,14 @@ const createImageEntry = (file: File): ProductImageEntry => ({
   cropPreviewUrl: null,
 });
 
-export const ProductManagementPage = ({ apiBaseUrl }: ProductManagementPageProps): JSX.Element => {
+export const ProductManagementPage = ({
+  apiBaseUrl,
+}: ProductManagementPageProps): JSX.Element => {
   const [products, setProducts] = React.useState<Product[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [creating, setCreating] = React.useState(false);
   const [page, setPage] = React.useState(1);
-  const [totalPages, setTotalPages] = React.useState(1);
+  const [pageSize, setPageSize] = React.useState(20);
   const [search, setSearch] = React.useState("");
   const [imageFilter, setImageFilter] = React.useState<ImageFilter>("all");
   const [stockFilter, setStockFilter] = React.useState<StockFilter>("all");
@@ -194,8 +161,12 @@ export const ProductManagementPage = ({ apiBaseUrl }: ProductManagementPageProps
   const [categoryOptions, setCategoryOptions] = React.useState<string[]>([]);
   const [createSheetOpen, setCreateSheetOpen] = React.useState(false);
   const [importSheetOpen, setImportSheetOpen] = React.useState(false);
-  const [captureProduct, setCaptureProduct] = React.useState<Product | null>(null);
-  const [detailProduct, setDetailProduct] = React.useState<Product | null>(null);
+  const [captureProduct, setCaptureProduct] = React.useState<Product | null>(
+    null,
+  );
+  const [detailProduct, setDetailProduct] = React.useState<Product | null>(
+    null,
+  );
   const [newProduct, setNewProduct] = React.useState<NewProductFormState>({
     productId: "",
     name: "",
@@ -203,12 +174,20 @@ export const ProductManagementPage = ({ apiBaseUrl }: ProductManagementPageProps
     inventoryCount: "0",
     useFullImage: true,
   });
-  const [newProductImages, setNewProductImages] = React.useState<ProductImageEntry[]>([]);
-  const [createErrorMessage, setCreateErrorMessage] = React.useState<string | null>(null);
+  const [newProductImages, setNewProductImages] = React.useState<
+    ProductImageEntry[]
+  >([]);
+  const [createErrorMessage, setCreateErrorMessage] = React.useState<
+    string | null
+  >(null);
   const [batchCsvFile, setBatchCsvFile] = React.useState<File | null>(null);
+  const batchFileInputRef = React.useRef<HTMLInputElement>(null);
   const [batchImporting, setBatchImporting] = React.useState(false);
-  const [batchImportResult, setBatchImportResult] = React.useState<ProductBatchImportResponse | null>(null);
-  const [batchImportError, setBatchImportError] = React.useState<string | null>(null);
+  const [batchImportResult, setBatchImportResult] =
+    React.useState<ProductBatchImportResponse | null>(null);
+  const [batchImportError, setBatchImportError] = React.useState<string | null>(
+    null,
+  );
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
   const deferredSearch = React.useDeferredValue(search);
@@ -219,40 +198,11 @@ export const ProductManagementPage = ({ apiBaseUrl }: ProductManagementPageProps
     [products, imageFilter, categoryFilter, stockFilter],
   );
 
-  const categoryCounts = React.useMemo(() => {
-    const counts = new Map<string, number>();
-    products.forEach((product) => {
-      const category = product.category?.trim() || "Chưa phân loại";
-      counts.set(category, (counts.get(category) ?? 0) + 1);
-    });
-    return counts;
-  }, [products]);
-
-  const imageCounts = React.useMemo(
-    () => ({
-      all: products.length,
-      missing: products.filter((product) => (product.reference_image_count ?? 0) === 0).length,
-      with_image: products.filter((product) => (product.reference_image_count ?? 0) > 0).length,
-    }),
-    [products],
-  );
-
-  const stockCounts = React.useMemo(
-    () => ({
-      all: products.length,
-      available: products.filter((product) => product.inventory_count > 5).length,
-      low: products.filter(
-        (product) => product.inventory_count > 0 && product.inventory_count <= 5,
-      ).length,
-      empty: products.filter((product) => product.inventory_count <= 0).length,
-    }),
-    [products],
-  );
+  const pagination = getPaginationBounds(visibleProducts.length, page, pageSize);
 
   React.useEffect(() => {
-    setTotalPages(Math.max(1, Math.ceil(visibleProducts.length / pageSize)));
-    setPage((currentPage) => Math.min(currentPage, Math.max(1, Math.ceil(visibleProducts.length / pageSize))));
-  }, [visibleProducts.length]);
+    setPage(pagination.page);
+  }, [pagination.page]);
 
   React.useEffect(() => {
     setPage(1);
@@ -309,7 +259,20 @@ export const ProductManagementPage = ({ apiBaseUrl }: ProductManagementPageProps
     };
   }, [apiBaseUrl, refreshToken]);
 
-  const pagedProducts = visibleProducts.slice((page - 1) * pageSize, page * pageSize);
+  const pagedProducts = visibleProducts.slice(
+    Math.max(0, pagination.start - 1),
+    pagination.end,
+  );
+  const hasFilters = Boolean(search) || categoryFilter !== "all" ||
+    stockFilter !== "all" || imageFilter !== "all";
+
+  const resetFilters = (): void => {
+    setSearch("");
+    setCategoryFilter("all");
+    setStockFilter("all");
+    setImageFilter("all");
+    setPage(1);
+  };
 
   const resetCreateForm = (): void => {
     newProductImages.forEach((entry) => {
@@ -383,11 +346,16 @@ export const ProductManagementPage = ({ apiBaseUrl }: ProductManagementPageProps
     });
   };
 
-  const handleCreateProduct = (event: React.FormEvent<HTMLFormElement>): void => {
+  const handleCreateProduct = (
+    event: React.FormEvent<HTMLFormElement>,
+  ): void => {
     event.preventDefault();
     const productId = newProduct.productId.trim();
     const productName = newProduct.name.trim();
-    const inventoryCount = Math.max(0, Number.parseInt(newProduct.inventoryCount || "0", 10) || 0);
+    const inventoryCount = Math.max(
+      0,
+      Number.parseInt(newProduct.inventoryCount || "0", 10) || 0,
+    );
     const [primaryImage, ...additionalImages] = newProductImages;
 
     if (!productId || !productName) {
@@ -402,21 +370,26 @@ export const ProductManagementPage = ({ apiBaseUrl }: ProductManagementPageProps
       name: productName,
       category: newProduct.category.trim() || undefined,
       inventoryCount,
-      file: primaryImage ? primaryImage.croppedFile ?? primaryImage.file : undefined,
+      file: primaryImage
+        ? (primaryImage.croppedFile ?? primaryImage.file)
+        : undefined,
     })
       .then(async (createdProduct) => {
         for (const imageEntry of additionalImages) {
           await addProductEmbedding(apiBaseUrl, {
             productId,
             file: imageEntry.croppedFile ?? imageEntry.file,
-            useFullImage: imageEntry.croppedFile ? true : newProduct.useFullImage,
+            useFullImage: imageEntry.croppedFile
+              ? true
+              : newProduct.useFullImage,
           });
         }
-        setNotice(primaryImage
-          ? newProductImages.length > 1
-            ? `Đã thêm ${productId} với ${newProductImages.length} ảnh tham chiếu.`
-            : `Đã thêm ${productId}.`
-          : `Đã tạo mã ${productId}. Hãy chụp ảnh để hệ thống nhận biết sản phẩm.`,
+        setNotice(
+          primaryImage
+            ? newProductImages.length > 1
+              ? `Đã thêm ${productId} với ${newProductImages.length} ảnh tham chiếu.`
+              : `Đã thêm ${productId}.`
+            : `Đã tạo mã ${productId}. Hãy chụp ảnh để hệ thống nhận biết sản phẩm.`,
         );
         resetCreateForm();
         setCreateSheetOpen(false);
@@ -471,6 +444,9 @@ export const ProductManagementPage = ({ apiBaseUrl }: ProductManagementPageProps
 
   const resetBatchImport = (): void => {
     setBatchCsvFile(null);
+    if (batchFileInputRef.current) {
+      batchFileInputRef.current.value = "";
+    }
     setBatchImportResult(null);
     setBatchImportError(null);
   };
@@ -482,7 +458,8 @@ export const ProductManagementPage = ({ apiBaseUrl }: ProductManagementPageProps
           ? {
               ...product,
               embedding_count: (product.embedding_count ?? 0) + 1,
-              approved_embedding_count: (product.approved_embedding_count ?? 0) + 1,
+              approved_embedding_count:
+                (product.approved_embedding_count ?? 0) + 1,
               reference_image_count: result.reference_image_count,
               thumbnail_base64: result.crop_preview_base64,
             }
@@ -517,48 +494,95 @@ export const ProductManagementPage = ({ apiBaseUrl }: ProductManagementPageProps
   };
 
   return (
-    <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-      <div className="flex h-12 shrink-0 items-center justify-between bg-blue-600 px-4 text-white">
-        <div className="flex min-w-0 items-center gap-3">
-          <Boxes className="h-5 w-5 shrink-0" />
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold">Danh sách mã hàng</p>
-            <p className="text-xs text-blue-100">{products.length} mã trong hệ thống</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="success"
-            size="sm"
-            className="h-8 border border-emerald-500"
-            onClick={() => setCreateSheetOpen(true)}
+    <>
+      <ManagementPage
+        title="Mã hàng"
+        description="Quản lý thông tin, ảnh nhận diện và tồn kho của từng mã hàng."
+        actions={
+          <>
+            <AntButton
+              icon={<UploadCloud size={16} />}
+              onClick={() => setImportSheetOpen(true)}
+            >
+              Nhập danh sách
+            </AntButton>
+            <AntButton
+              color="green"
+              variant="solid"
+              className="app-success-action"
+              icon={<Plus size={16} />}
+              onClick={() => setCreateSheetOpen(true)}
+            >
+              Thêm mã hàng
+            </AntButton>
+          </>
+        }
+        filters={
+          <ManagementFilters
+            search={search}
+            onSearchChange={setSearch}
+            placeholder="Tìm mã hàng, tên hoặc phân loại"
+            active={hasFilters}
+            onReset={resetFilters}
           >
-            <Plus className="h-4 w-4" />
-            Thêm mã hàng
-          </Button>
-          <Button
-            variant="success"
-            size="sm"
-            className="h-8 border border-emerald-500"
-            onClick={() => setImportSheetOpen(true)}
-          >
-            <UploadCloud className="mr-2 h-4 w-4" />
-            Nhập danh sách
-          </Button>
-        </div>
-      </div>
+            <ManagementFilterField label="Phân loại">
+              <Select
+                aria-label="Lọc phân loại"
+                value={categoryFilter}
+                onChange={setCategoryFilter}
+                options={[
+                  { value: "all", label: "Tất cả" },
+                  ...categoryOptions.map((category) => ({ value: category, label: category })),
+                ]}
+              />
+            </ManagementFilterField>
+            <ManagementFilterField label="Tồn kho">
+              <Select<StockFilter>
+                aria-label="Lọc tồn kho"
+                value={stockFilter}
+                onChange={setStockFilter}
+                options={stockFilterOptions}
+              />
+            </ManagementFilterField>
+            <ManagementFilterField label="Ảnh nhận diện">
+              <Select<ImageFilter>
+                aria-label="Lọc ảnh nhận diện"
+                value={imageFilter}
+                onChange={setImageFilter}
+                options={imageFilterOptions}
+              />
+            </ManagementFilterField>
+          </ManagementFilters>
+        }
+        summary={<span><strong>{visibleProducts.length}</strong> mã hàng</span>}
+        notice={notice}
+        error={errorMessage}
+        pagination={
+          <ManagementPagination
+            total={visibleProducts.length}
+            page={pagination.page}
+            pageSize={pageSize}
+            onChange={(nextPage, nextPageSize) => {
+              setPage(nextPageSize === pageSize ? nextPage : 1);
+              setPageSize(nextPageSize);
+            }}
+          />
+        }
+      >
+        <ProductManagementTable
+          products={pagedProducts}
+          loading={loading}
+          emptyText={hasFilters ? "Không có mã hàng phù hợp với bộ lọc." : "Chưa có mã hàng."}
+          onCapture={setCaptureProduct}
+          onDetail={setDetailProduct}
+        />
+      </ManagementPage>
 
       <Sheet open={createSheetOpen} onOpenChange={setCreateSheetOpen}>
-        <SheetContent className="max-w-4xl overflow-y-auto">
-          <SheetHeader>
-            <SheetTitle>Thêm mã hàng</SheetTitle>
-            <SheetDescription>
-              Tạo mã hàng trước, ảnh có thể chụp ngay hoặc bổ sung sau.
-            </SheetDescription>
-          </SheetHeader>
-          <form className="mt-6 space-y-5" onSubmit={handleCreateProduct}>
+        <SheetContent title="Thêm mã hàng" size={896} className="overflow-y-auto">
+          <form className="space-y-5" onSubmit={handleCreateProduct}>
             {createErrorMessage && (
-              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              <div className="rounded-md border border-danger-border bg-danger-surface px-3 py-2 text-sm text-danger">
                 {createErrorMessage}
               </div>
             )}
@@ -570,7 +594,10 @@ export const ProductManagementPage = ({ apiBaseUrl }: ProductManagementPageProps
                   value={newProduct.productId}
                   placeholder="VD: NUT_XANH_01"
                   onChange={(event) =>
-                    setNewProduct((current) => ({ ...current, productId: event.target.value }))
+                    setNewProduct((current) => ({
+                      ...current,
+                      productId: event.target.value,
+                    }))
                   }
                 />
               </div>
@@ -598,7 +625,12 @@ export const ProductManagementPage = ({ apiBaseUrl }: ProductManagementPageProps
                   id="new-product-name"
                   value={newProduct.name}
                   placeholder="VD: Nút xanh phi 22"
-                  onChange={(event) => setNewProduct((current) => ({ ...current, name: event.target.value }))}
+                  onChange={(event) =>
+                    setNewProduct((current) => ({
+                      ...current,
+                      name: event.target.value,
+                    }))
+                  }
                 />
               </div>
               <div className="space-y-2">
@@ -608,31 +640,33 @@ export const ProductManagementPage = ({ apiBaseUrl }: ProductManagementPageProps
                   value={newProduct.category}
                   placeholder="VD: Nút nhấn"
                   onChange={(event) =>
-                    setNewProduct((current) => ({ ...current, category: event.target.value }))
+                    setNewProduct((current) => ({
+                      ...current,
+                      category: event.target.value,
+                    }))
                   }
                 />
               </div>
             </div>
             <div className="space-y-2">
-              <Label>Ảnh nhận diện</Label>
+              <Label>Ảnh nhận diện (không bắt buộc)</Label>
               <CameraImageCapture
                 disabled={creating}
                 onCapture={(file) => appendNewProductImages([file])}
                 onFilesSelected={appendNewProductImages}
               />
-              <p className="text-xs text-slate-500">
-                Không bắt buộc. Có thể tạo mã trước rồi chụp ảnh sau; nếu thêm ảnh ngay, mỗi ảnh đều có thể cắt và xoá riêng.
-              </p>
             </div>
             {newProductImages.length > 0 && (
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <p className="text-sm font-semibold text-slate-950">{newProductImages.length} ảnh đã chọn</p>
+                  <p className="text-sm font-semibold text-content">
+                    {newProductImages.length} ảnh đã chọn
+                  </p>
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-8 text-slate-500"
+                    className="h-8 text-muted"
                     onClick={clearNewProductImages}
                   >
                     <X className="mr-2 h-4 w-4" />
@@ -652,25 +686,27 @@ export const ProductManagementPage = ({ apiBaseUrl }: ProductManagementPageProps
                 </div>
               </div>
             )}
-            <label className="flex items-start gap-3 rounded-lg border border-slate-200 bg-white p-3">
-              <input
-                type="checkbox"
-                className="mt-1 h-4 w-4 rounded border-slate-300"
-                checked={newProduct.useFullImage}
-                onChange={(event) =>
-                  setNewProduct((current) => ({ ...current, useFullImage: event.target.checked }))
-                }
-              />
+            <Checkbox
+              className="rounded-lg border border-line bg-surface p-3"
+              aria-label="Ảnh đã cắt đúng sản phẩm"
+              checked={newProduct.useFullImage}
+              onChange={(event) =>
+                setNewProduct((current) => ({
+                  ...current,
+                  useFullImage: event.target.checked,
+                }))
+              }
+            >
               <span>
-                <span className="block text-sm font-medium text-slate-950">
-                  Ảnh đã cắt đúng sản phẩm, không cần hệ thống cắt lại
+                <span className="block text-sm font-medium text-content">
+                  Ảnh đã cắt đúng sản phẩm
                 </span>
-                <span className="mt-1 block text-xs text-slate-500">
-                  Nên bật khi ảnh tham chiếu chỉ chứa một linh kiện rõ ràng.
+                <span className="mt-1 block text-xs text-muted">
+                  Bật khi ảnh chỉ có một sản phẩm; hệ thống sẽ không cắt lại.
                 </span>
               </span>
-            </label>
-            <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
+            </Checkbox>
+            <div className="flex justify-end gap-2 border-t border-line pt-4">
               <Button
                 type="button"
                 variant="outline"
@@ -684,7 +720,7 @@ export const ProductManagementPage = ({ apiBaseUrl }: ProductManagementPageProps
               </Button>
               <Button type="submit" disabled={creating}>
                 {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                Lưu linh kiện
+                Tạo mã hàng
               </Button>
             </div>
           </form>
@@ -701,7 +737,9 @@ export const ProductManagementPage = ({ apiBaseUrl }: ProductManagementPageProps
           }
         }}
         onCaptured={handleReferenceCaptured}
-        onReferencesChanged={() => setRefreshToken((currentToken) => currentToken + 1)}
+        onReferencesChanged={() =>
+          setRefreshToken((currentToken) => currentToken + 1)
+        }
       />
 
       <ProductDetailSheet
@@ -716,42 +754,63 @@ export const ProductManagementPage = ({ apiBaseUrl }: ProductManagementPageProps
         }}
         onUpdated={handleProductUpdated}
         onDeleted={handleProductDeleted}
-        onReferencesChanged={() => setRefreshToken((currentToken) => currentToken + 1)}
+        onReferencesChanged={() =>
+          setRefreshToken((currentToken) => currentToken + 1)
+        }
       />
 
       <Sheet open={importSheetOpen} onOpenChange={setImportSheetOpen}>
-        <SheetContent className="max-w-3xl overflow-y-auto">
-          <SheetHeader>
-            <SheetTitle>Nhập danh sách mã hàng</SheetTitle>
-            <SheetDescription>
-              Chọn bảng tính của khách. Mã hàng sẽ được gom theo phân loại để chụp ảnh thuận tiện.
-            </SheetDescription>
-          </SheetHeader>
+        <SheetContent
+          title="Nhập danh sách mã hàng"
+          description="Chọn bảng tính của khách. Mã hàng sẽ được gom theo phân loại để chụp ảnh thuận tiện."
+          size={768}
+          className="overflow-y-auto"
+        >
           <div className="mt-6 space-y-5">
             {batchImportError && (
-              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              <div className="rounded-md border border-danger-border bg-danger-surface px-3 py-2 text-sm text-danger">
                 {batchImportError}
               </div>
             )}
             <div className="flex flex-wrap items-center gap-2">
-              <Button type="button" variant="outline" onClick={downloadSampleSpreadsheet}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={downloadSampleSpreadsheet}
+              >
                 <FileDown className="h-4 w-4" />
                 Tải bảng tính mẫu
               </Button>
-              <Button type="button" variant="ghost" onClick={resetBatchImport} disabled={batchImporting}>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={resetBatchImport}
+                disabled={batchImporting}
+              >
                 Xoá tệp đã chọn
               </Button>
             </div>
             <div className="space-y-3">
-              <label className="flex cursor-pointer flex-col justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50 p-5 transition-colors hover:bg-slate-100">
-                <span className="text-sm font-semibold text-slate-950">Bảng tính danh sách mã hàng</span>
-                <span className="mt-1 text-xs text-slate-500">
-                  Đọc Mã hàng, Tên mặt hàng và Nhóm mặt hàng từ bảng tính khách đang dùng.
+              <div className="flex flex-col justify-center rounded-xl border border-dashed border-border bg-subtle p-5">
+                <span className="text-sm font-semibold text-content">
+                  Bảng tính danh sách mã hàng
                 </span>
-                <span className="mt-3 truncate rounded-md bg-white px-3 py-2 text-sm text-slate-700">
+                <span className="mt-1 text-xs text-muted">
+                  Đọc Mã hàng, Tên mặt hàng và Nhóm mặt hàng từ bảng tính khách
+                  đang dùng.
+                </span>
+                <span className="mt-3 truncate rounded-md bg-surface px-3 py-2 text-sm text-secondary">
                   {batchCsvFile?.name ?? "Chưa chọn tệp"}
                 </span>
+                <AntButton
+                  htmlType="button"
+                  className="mt-3 self-start"
+                  onClick={() => batchFileInputRef.current?.click()}
+                >
+                  Chọn bảng tính
+                </AntButton>
                 <input
+                  ref={batchFileInputRef}
                   type="file"
                   accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                   className="hidden"
@@ -761,15 +820,28 @@ export const ProductManagementPage = ({ apiBaseUrl }: ProductManagementPageProps
                     setBatchImportError(null);
                   }}
                 />
-              </label>
+              </div>
             </div>
-            <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
-              <Button type="button" variant="outline" disabled={batchImporting || !batchCsvFile} onClick={() => runBatchImport(true)}>
-                {batchImporting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            <div className="flex justify-end gap-2 border-t border-line pt-4">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={batchImporting || !batchCsvFile}
+                onClick={() => runBatchImport(true)}
+              >
+                {batchImporting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : null}
                 Kiểm tra trước
               </Button>
-              <Button type="button" disabled={batchImporting || !batchCsvFile} onClick={() => runBatchImport(false)}>
-                {batchImporting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              <Button
+                type="button"
+                disabled={batchImporting || !batchCsvFile}
+                onClick={() => runBatchImport(false)}
+              >
+                {batchImporting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : null}
                 Nhập chính thức
               </Button>
             </div>
@@ -778,338 +850,80 @@ export const ProductManagementPage = ({ apiBaseUrl }: ProductManagementPageProps
                 <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
                   <Card>
                     <CardContent className="p-3">
-                      <p className="text-xs text-slate-500">Dòng</p>
-                      <p className="text-lg font-bold text-slate-950">{batchImportResult.total_rows}</p>
+                      <p className="text-xs text-muted">Dòng</p>
+                      <p className="text-lg font-bold text-content">
+                        {batchImportResult.total_rows}
+                      </p>
                     </CardContent>
                   </Card>
                   <Card>
                     <CardContent className="p-3">
-                      <p className="text-xs text-slate-500">Tạo mới</p>
-                      <p className="text-lg font-bold text-emerald-700">{batchImportResult.created_count}</p>
+                      <p className="text-xs text-muted">Tạo mới</p>
+                      <p className="text-lg font-bold text-success">
+                        {batchImportResult.created_count}
+                      </p>
                     </CardContent>
                   </Card>
                   <Card>
                     <CardContent className="p-3">
-                      <p className="text-xs text-slate-500">Cập nhật</p>
-                      <p className="text-lg font-bold text-amber-700">{batchImportResult.updated_count}</p>
+                      <p className="text-xs text-muted">Cập nhật</p>
+                      <p className="text-lg font-bold text-warning">
+                        {batchImportResult.updated_count}
+                      </p>
                     </CardContent>
                   </Card>
                   <Card>
                     <CardContent className="p-3">
-                      <p className="text-xs text-slate-500">Lỗi</p>
-                      <p className="text-lg font-bold text-red-700">{batchImportResult.failed_count}</p>
+                      <p className="text-xs text-muted">Lỗi</p>
+                      <p className="text-lg font-bold text-danger">
+                        {batchImportResult.failed_count}
+                      </p>
                     </CardContent>
                   </Card>
                 </div>
-                <div className="overflow-hidden rounded-lg border border-slate-200">
-                  <div className="grid grid-cols-[56px_minmax(120px,1fr)_minmax(180px,1.4fr)_minmax(140px,1fr)_110px] border-b border-slate-200 bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    <div className="px-3 py-2">Dòng</div>
-                    <div className="px-3 py-2">Mã</div>
-                    <div className="px-3 py-2">Tên</div>
-                    <div className="px-3 py-2">Phân loại</div>
-                    <div className="px-3 py-2">Trạng thái</div>
-                  </div>
-                  <div className="max-h-80 overflow-auto">
-                    {batchImportResult.rows.map((row) => (
-                      <div
-                        key={`${row.row_index}-${row.ma_san_pham ?? "empty"}`}
-                        className="grid grid-cols-[56px_minmax(120px,1fr)_minmax(180px,1.4fr)_minmax(140px,1fr)_110px] border-b border-slate-100 text-sm last:border-b-0"
-                      >
-                        <div className="px-3 py-2 text-slate-500">{row.row_index}</div>
-                        <div className="truncate px-3 py-2 font-semibold text-slate-950">{row.ma_san_pham ?? "-"}</div>
-                        <div className="truncate px-3 py-2 text-slate-700">{row.ten_san_pham ?? "-"}</div>
-                        <div className="truncate px-3 py-2 text-slate-600">{row.nhom_mat_hang ?? "Chưa phân loại"}</div>
-                        <div className="px-3 py-2">
-                          <Badge variant={importStatusTone(row.status)}>{importStatusLabel(row.status)}</Badge>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                <Table<ProductBatchImportRow>
+                  size="small"
+                  rowKey={(row) =>
+                    `${row.row_index}-${row.ma_san_pham ?? "empty"}`
+                  }
+                  pagination={false}
+                  scroll={{ x: 650, y: 320 }}
+                  dataSource={batchImportResult.rows}
+                  columns={[
+                    { title: "Dòng", dataIndex: "row_index", width: 64 },
+                    {
+                      title: "Mã",
+                      dataIndex: "ma_san_pham",
+                      render: (value) => value ?? "-",
+                    },
+                    {
+                      title: "Tên",
+                      dataIndex: "ten_san_pham",
+                      render: (value) => value ?? "-",
+                    },
+                    {
+                      title: "Phân loại",
+                      dataIndex: "nhom_mat_hang",
+                      render: (value) => value ?? "Chưa phân loại",
+                    },
+                    {
+                      title: "Trạng thái",
+                      key: "status",
+                      width: 110,
+                      render: (_, row) => (
+                        <Badge variant={importStatusTone(row.status)}>
+                          {importStatusLabel(row.status)}
+                        </Badge>
+                      ),
+                    },
+                  ]}
+                />
               </div>
             )}
           </div>
         </SheetContent>
       </Sheet>
 
-      <div className="flex min-h-0 flex-1">
-        <aside className="hidden w-56 shrink-0 flex-col overflow-y-auto border-r border-slate-200 bg-slate-50 lg:flex">
-          <div className="border-b border-slate-200 p-3">
-            <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase text-slate-500">
-              <Tags className="h-4 w-4" />
-              Phân loại
-            </div>
-            <div className="space-y-0.5">
-              <button
-                type="button"
-                aria-pressed={categoryFilter === "all"}
-                onClick={() => setCategoryFilter("all")}
-                className={cn(
-                  "flex h-8 w-full items-center justify-between rounded px-2 text-left text-sm",
-                  categoryFilter === "all"
-                    ? "bg-blue-100 font-semibold text-blue-700"
-                    : "text-slate-700 hover:bg-slate-200",
-                )}
-              >
-                <span>Tất cả</span>
-                <span className="text-xs">{products.length}</span>
-              </button>
-              {categoryOptions.map((category) => (
-                <button
-                  key={category}
-                  type="button"
-                  aria-pressed={categoryFilter === category}
-                  onClick={() => setCategoryFilter(category)}
-                  className={cn(
-                    "flex h-8 w-full items-center justify-between rounded px-2 text-left text-sm",
-                    categoryFilter === category
-                      ? "bg-blue-100 font-semibold text-blue-700"
-                      : "text-slate-700 hover:bg-slate-200",
-                  )}
-                >
-                  <span className="truncate pr-2">{category}</span>
-                  <span className="text-xs">{categoryCounts.get(category) ?? 0}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="border-b border-slate-200 p-3">
-            <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase text-slate-500">
-              <Package className="h-4 w-4" />
-              Tồn kho
-            </div>
-            <div className="space-y-0.5">
-              {stockFilterOptions.map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  aria-pressed={stockFilter === option.value}
-                  onClick={() => setStockFilter(option.value)}
-                  className={cn(
-                    "flex h-8 w-full items-center justify-between rounded px-2 text-left text-sm",
-                    stockFilter === option.value
-                      ? "bg-blue-100 font-semibold text-blue-700"
-                      : "text-slate-700 hover:bg-slate-200",
-                  )}
-                >
-                  <span>{option.label}</span>
-                  <span className="text-xs">{stockCounts[option.value]}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="p-3">
-            <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase text-slate-500">
-              <Image className="h-4 w-4" />
-              Ảnh nhận diện
-            </div>
-            <div className="space-y-0.5">
-              {imageFilterOptions.map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  aria-pressed={imageFilter === option.value}
-                  onClick={() => setImageFilter(option.value)}
-                  className={cn(
-                    "flex h-8 w-full items-center justify-between rounded px-2 text-left text-sm",
-                    imageFilter === option.value
-                      ? "bg-blue-100 font-semibold text-blue-700"
-                      : "text-slate-700 hover:bg-slate-200",
-                  )}
-                >
-                  <span>{option.label}</span>
-                  <span className="text-xs">{imageCounts[option.value]}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </aside>
-
-        <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex shrink-0 items-center gap-2 border-b border-slate-200 bg-white p-2">
-            <div className="relative min-w-[240px] flex-1">
-              <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-              <Input
-                value={search}
-                className="h-9 border-slate-300 pl-9"
-                placeholder="Tìm mã hàng, tên hoặc phân loại"
-                onChange={(event) => setSearch(event.target.value)}
-              />
-            </div>
-            <div className="hidden text-xs text-slate-500 sm:block">
-              {visibleProducts.length} kết quả
-            </div>
-            <div className="flex gap-2 lg:hidden">
-              <select
-                value={categoryFilter}
-                className="h-9 w-40 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-700"
-                onChange={(event) => setCategoryFilter(event.target.value)}
-              >
-                <option value="all">Tất cả phân loại</option>
-                {categoryOptions.map((category) => (
-                  <option key={category} value={category}>
-                    {category}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={stockFilter}
-                className="h-9 w-32 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-700"
-                onChange={(event) => setStockFilter(event.target.value as StockFilter)}
-              >
-                {stockFilterOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {notice ? (
-            <div className="mx-2 mt-2 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-              {notice}
-            </div>
-          ) : null}
-          {errorMessage ? (
-            <div className="mx-2 mt-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {errorMessage}
-            </div>
-          ) : null}
-
-          <div className="min-h-0 flex-1 overflow-auto">
-            {loading && products.length === 0 ? (
-              <div className="space-y-1 p-2">
-                <Skeleton className="h-12 w-full" />
-                <Skeleton className="h-12 w-full" />
-                <Skeleton className="h-12 w-full" />
-                <Skeleton className="h-12 w-full" />
-              </div>
-            ) : (
-              <div className="min-w-[760px]">
-                <div
-                  className={cn(
-                    productGridClass,
-                    "sticky top-0 z-10 h-9 border-b border-slate-200 bg-blue-50",
-                  )}
-                >
-                  <div className="w-14 shrink-0 px-2 text-xs font-semibold uppercase text-slate-600">
-                    Ảnh
-                  </div>
-                  <div className="min-w-0 flex-1 px-3 text-xs font-semibold uppercase text-slate-600">
-                    Mã hàng
-                  </div>
-                  <div className="w-36 shrink-0 px-2 text-xs font-semibold uppercase text-slate-600">
-                    Phân loại
-                  </div>
-                  <div className="w-32 shrink-0 px-2 text-xs font-semibold uppercase text-slate-600">
-                    Tồn kho
-                  </div>
-                  <div className="w-28 shrink-0 px-2 text-xs font-semibold uppercase text-slate-600">
-                    Ảnh nhận diện
-                  </div>
-                  <div className="w-24 shrink-0 px-3 text-right text-xs font-semibold uppercase text-slate-600">
-                    Thao tác
-                  </div>
-                </div>
-
-                {pagedProducts.length === 0 ? (
-                  <div className="flex h-40 items-center justify-center text-sm text-slate-500">
-                    Không có mã hàng phù hợp.
-                  </div>
-                ) : (
-                  pagedProducts.map((product) => {
-                    const referenceCount = product.reference_image_count ?? 0;
-                    const category = product.category?.trim() || "Chưa phân loại";
-
-                    return (
-                      <div
-                        key={product.product_id}
-                        className={cn(
-                          productGridClass,
-                          "min-h-14 border-b border-slate-200 bg-white transition-colors hover:bg-blue-50/50",
-                        )}
-                      >
-                        <div className="w-14 shrink-0 px-2 py-1.5">
-                          <ProductImageCell product={product} />
-                        </div>
-                        <div className="min-w-0 flex-1 px-3 py-1.5">
-                          <p className="truncate text-sm font-semibold text-slate-950">{product.name}</p>
-                          <p className="truncate text-xs text-slate-500">{product.product_id}</p>
-                        </div>
-                        <div className="w-36 shrink-0 truncate px-2 py-1.5 text-sm text-slate-600">
-                          {category}
-                        </div>
-                        <div className="w-32 shrink-0 px-2 py-1.5">
-                          <div className="flex items-center gap-2">
-                            <Badge variant={stockTone(product)}>{stockLabel(product)}</Badge>
-                            <span className="text-sm font-semibold text-slate-950">
-                              {product.inventory_count}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="w-28 shrink-0 px-2 py-1.5 text-sm text-slate-700">
-                          {referenceCount > 0 ? `${referenceCount} ảnh` : "Chưa có"}
-                        </div>
-                        <div className="w-24 shrink-0 px-3 py-1.5">
-                          <div className="flex justify-end gap-1">
-                            <Button
-                              variant={referenceCount > 0 ? "outline" : "success"}
-                              size="icon"
-                              className="h-8 w-8"
-                              title="Chụp ảnh"
-                              aria-label={`Chụp ảnh cho ${product.product_id}`}
-                              onClick={() => setCaptureProduct(product)}
-                            >
-                              <Camera className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="icon"
-                              className="h-8 w-8 text-blue-700"
-                              title="Xem chi tiết"
-                              aria-label={`Xem chi tiết ${product.product_id}`}
-                              onClick={() => setDetailProduct(product)}
-                            >
-                              <Eye className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="flex h-11 shrink-0 items-center justify-between border-t border-slate-200 bg-white px-3">
-            <p className="text-xs text-slate-500">
-              Trang {page}/{totalPages} · {pagedProducts.length}/{visibleProducts.length} mã hàng
-            </p>
-            <div className="flex gap-1">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={page <= 1}
-                onClick={() => setPage((currentPage) => Math.max(1, currentPage - 1))}
-              >
-                Trước
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={page >= totalPages}
-                onClick={() => setPage((currentPage) => Math.min(totalPages, currentPage + 1))}
-              >
-                Sau
-              </Button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
+    </>
   );
 };

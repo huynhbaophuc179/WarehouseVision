@@ -1,0 +1,34 @@
+.scanner-capture { display: flex; flex-direction: column; gap: 20px; min-width: 0; width: 100%; padding: 20px 24px; }
+.scanner-capture__header h2 { margin: 0; font-size: 24px; font-weight: 600; }
+.scanner-capture__header p { margin: 8px 0 0; color: var(--scanner-muted); }
+.scanner-capture__stage {
+  position: relative; display: flex; align-items: center; justify-content: center;
+  width: 100%; min-height: 360px; height: clamp(360px, 55dvh, 720px); overflow: hidden;
+  border: 1px solid var(--scanner-border); border-radius: 8px; background: #10141a;
+}
+.scanner-capture__stage > video, .scanner-capture__stage > img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.scanner-capture__placeholder, .scanner-capture__processing {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 16px; padding: 32px; text-align: center; color: #fff; background: #10141a;
+}
+.scanner-capture__placeholder strong, .scanner-capture__processing strong { font-size: 24px; font-weight: 500; }
+.scanner-capture__placeholder span, .scanner-capture__processing > span:last-child { max-width: 560px; color: #d3dce4; }
+.scanner-capture__guide { position: absolute; inset: 12% 15%; border: 2px solid rgba(255, 255, 255, .7); border-radius: 8px; pointer-events: none; }
+.scanner-capture__processing { background: rgba(16, 20, 26, .78); }
+.scanner-capture__spinner { animation: scanner-capture-spin 1.4s linear infinite; }
+.scanner-capture__scanline { position: absolute; inset: 0 0 auto; height: 2px; background: #77c8ed; opacity: .65; animation: scanner-capture-scan 3s ease-in-out infinite alternate; }
+.scanner-capture__error { margin: 0; padding: 16px; border-radius: 8px; border: 1px solid rgb(var(--color-danger-border)); background: rgb(var(--color-danger-surface)); color: rgb(var(--color-danger)); }
+.scanner-capture__actions { display: grid; grid-template-columns: 1fr 1fr 1.3fr; gap: 16px; }
+.scanner-capture__actions--preview { grid-template-columns: 1fr 1fr; }
+.scanner-capture__actions .scanner-action__label svg { display: inline-block; vertical-align: middle; margin-right: 4px; }
+@keyframes scanner-capture-spin { to { transform: rotate(360deg); } }
+@keyframes scanner-capture-scan { from { top: 0; } to { top: calc(100% - 2px); } }
+@media (max-width: 760px) {
+  .scanner-capture { gap: 16px; }
+  .scanner-capture__actions { grid-template-columns: 1fr; }
+  .scanner-capture__stage { min-height: 280px; height: 48dvh; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scanner-capture__spinner, .scanner-capture__scanline { animation: none; }
+  .scanner-capture__scanline { top: 50%; }
+}

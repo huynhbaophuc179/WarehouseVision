@@ -1,5 +1,6 @@
 import { ImageOff } from "lucide-react";
 import * as React from "react";
+import { calculateContainedMediaRect } from "@/lib/mediaFrame";
 import { cn } from "@/lib/utils";
 import type { DetectionResult } from "@/types/api";
 
@@ -16,10 +17,36 @@ export const ImageOverlay = ({
   selectedDetectionId,
   onSelectDetection,
 }: ImageOverlayProps): JSX.Element => {
-  const [imageSize, setImageSize] = React.useState<{ width: number; height: number } | null>(null);
+  const containerRef = React.useRef<HTMLDivElement | null>(null);
+  const [containerSize, setContainerSize] = React.useState({ width: 0, height: 0 });
+  const [imageSize, setImageSize] = React.useState<{
+    url: string;
+    width: number;
+    height: number;
+  } | null>(null);
+
+  React.useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const updateSize = (): void => {
+      const { width, height } = container.getBoundingClientRect();
+      setContainerSize((current) =>
+        current.width === width && current.height === height ? current : { width, height },
+      );
+    };
+
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
 
   const onImageLoad = (event: React.SyntheticEvent<HTMLImageElement>): void => {
     setImageSize({
+      url: event.currentTarget.getAttribute("src") ?? "",
       width: event.currentTarget.naturalWidth,
       height: event.currentTarget.naturalHeight,
     });
@@ -27,8 +54,8 @@ export const ImageOverlay = ({
 
   if (!imageUrl) {
     return (
-      <div className="flex h-full min-h-72 items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50">
-        <div className="text-center text-slate-500">
+      <div className="flex h-full min-h-72 items-center justify-center rounded-lg border border-dashed border-border bg-subtle">
+        <div className="text-center text-muted">
           <ImageOff className="mx-auto h-10 w-10" />
           <p className="mt-3 text-sm font-medium">Chưa có ảnh</p>
         </div>
@@ -36,19 +63,35 @@ export const ImageOverlay = ({
     );
   }
 
+  const loadedImageSize = imageSize?.url === imageUrl ? imageSize : null;
+  const mediaRect = calculateContainedMediaRect(
+    containerSize.width,
+    containerSize.height,
+    loadedImageSize?.width ?? 0,
+    loadedImageSize?.height ?? 0,
+  );
+  const mediaStyle: React.CSSProperties = {
+    left: mediaRect.x,
+    top: mediaRect.y,
+    width: mediaRect.width,
+    height: mediaRect.height,
+  };
+
   return (
-    <div className="relative overflow-hidden rounded-lg bg-white">
+    <div ref={containerRef} className="relative h-full w-full overflow-hidden bg-surface">
       <img
         src={imageUrl}
         alt="Ảnh sản phẩm"
-        className="block w-full select-none"
+        className="absolute select-none object-contain"
+        style={mediaStyle}
         draggable={false}
         onLoad={onImageLoad}
       />
-      {imageSize && detections.length > 0 && (
+      {loadedImageSize && mediaRect.width > 0 && detections.length > 0 && (
         <svg
-          className="absolute inset-0 h-full w-full"
-          viewBox={`0 0 ${imageSize.width} ${imageSize.height}`}
+          className="absolute"
+          style={mediaStyle}
+          viewBox={`0 0 ${loadedImageSize.width} ${loadedImageSize.height}`}
           role="img"
           aria-label="Vùng sản phẩm đã nhận diện"
         >
