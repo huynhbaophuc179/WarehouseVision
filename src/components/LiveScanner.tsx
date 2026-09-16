@@ -1,256 +1,111 @@
-import { Camera, ImageUp, Loader2, RotateCcw, Video, VideoOff } from "lucide-react";
-import * as React from "react";
-import { Button } from "@/components/ui/button";
-import { ImageOverlay } from "@/components/ImageOverlay";
-import type { DetectionResult } from "@/types/api";
+import { BackButton } from "@/components/ui/back-button";
+import { Camera, ImageUp, LoaderCircle } from "lucide-react";
+import { forwardRef, useImperativeHandle, useRef, useState, type ChangeEvent } from "react";
+import { ScannerActionButton } from "./scanner-action-button";
+import { useScannerCamera } from "@/hooks/use-scanner-camera";
+import { validateScannerImage } from "@/lib/scanner-image";
+import "@/styles/scanner-capture.css";
 
-export interface LiveScannerProps {
-  isProcessing: boolean;
-  imageUrl: string | null;
-  detections: DetectionResult[];
-  selectedDetectionId: string | null;
-  allowEnterRetake: boolean;
-  onFileSelected: (file: File) => void;
-  onRecognize: (file?: File) => void;
-  onSelectDetection: (detectionId: string) => void;
+export interface ScannerCaptureHandle {
+  capture: () => void;
+  openUpload: () => void;
+  retryCamera: () => void;
 }
 
-const cameraErrorMessage = (error: unknown): string => {
-  if (error instanceof DOMException && error.name === "NotAllowedError") {
-    return "Chưa được cấp quyền dùng máy ảnh. Hãy cho phép trình duyệt sử dụng máy ảnh.";
-  }
-  if (error instanceof DOMException && error.name === "NotFoundError") {
-    return "Không tìm thấy máy ảnh trên máy tính.";
-  }
-  return "Không mở được máy ảnh. Hãy kiểm tra kết nối và thử lại.";
-};
+export interface LiveScannerProps {
+  imageUrl: string | null;
+  isProcessing: boolean;
+  onFileSelected: (file: File) => void;
+  onRecognize: (file: File) => void;
+  onAnalyze: () => void;
+  onReset: () => void;
+  errorMessage?: string | null;
+}
 
-const isInteractiveTarget = (target: EventTarget | null): boolean => {
-  if (!(target instanceof HTMLElement)) {
-    return false;
-  }
-  return Boolean(target.closest("input, textarea, select, button, a, [contenteditable='true']"));
-};
-
-export const LiveScanner = ({
-  isProcessing,
-  imageUrl,
-  detections,
-  selectedDetectionId,
-  allowEnterRetake,
-  onFileSelected,
-  onRecognize,
-  onSelectDetection,
-}: LiveScannerProps): JSX.Element => {
-  const uploadInputRef = React.useRef<HTMLInputElement | null>(null);
-  const videoRef = React.useRef<HTMLVideoElement | null>(null);
-  const streamRef = React.useRef<MediaStream | null>(null);
-  const cameraRequestRef = React.useRef(0);
-  const [cameraReady, setCameraReady] = React.useState(false);
-  const [cameraStarting, setCameraStarting] = React.useState(false);
-  const [cameraError, setCameraError] = React.useState<string | null>(null);
-  const stopCamera = React.useCallback((): void => {
-    cameraRequestRef.current += 1;
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-    setCameraReady(false);
-  }, []);
-
-  const startCamera = React.useCallback(async (): Promise<void> => {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraError("Trình duyệt này không hỗ trợ máy ảnh trực tiếp.");
-      return;
-    }
-    setCameraStarting(true);
-    setCameraError(null);
-    stopCamera();
-    const requestId = cameraRequestRef.current + 1;
-    cameraRequestRef.current = requestId;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: "environment" },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-        },
-        audio: false,
-      });
-      if (requestId !== cameraRequestRef.current) {
-        stream.getTracks().forEach((track) => track.stop());
-        return;
-      }
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-      setCameraReady(true);
-    } catch (error) {
-      if (requestId === cameraRequestRef.current) {
-        setCameraError(cameraErrorMessage(error));
-      }
-    } finally {
-      if (requestId === cameraRequestRef.current) {
-        setCameraStarting(false);
-      }
-    }
-  }, [stopCamera]);
-
-  React.useEffect(() => {
-    void startCamera();
-    return stopCamera;
-  }, [startCamera, stopCamera]);
-
-  const captureAndRecognize = React.useCallback((): void => {
-    const video = videoRef.current;
-    if (
-      !video ||
-      !cameraReady ||
-      isProcessing ||
-      video.videoWidth <= 0 ||
-      video.videoHeight <= 0
-    ) {
-      return;
-    }
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const context = canvas.getContext("2d");
-    if (!context) {
-      setCameraError("Không chụp được hình từ máy ảnh.");
-      return;
-    }
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    canvas.toBlob(
-      (blob) => {
-        if (!blob) {
-          setCameraError("Không tạo được ảnh từ máy ảnh.");
-          return;
-        }
-        const file = new File([blob], `camera-${Date.now()}.jpg`, { type: "image/jpeg" });
-        onFileSelected(file);
-        onRecognize(file);
-      },
-      "image/jpeg",
-      0.92,
-    );
-  }, [cameraReady, isProcessing, onFileSelected, onRecognize]);
-
-  React.useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      const canCapture = !imageUrl || allowEnterRetake;
-      if (!canCapture || event.key !== "Enter" || event.repeat || isInteractiveTarget(event.target)) {
-        return;
-      }
-      event.preventDefault();
-      captureAndRecognize();
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [allowEnterRetake, captureAndRecognize, imageUrl]);
-
-  const handleUpload = (event: React.ChangeEvent<HTMLInputElement>): void => {
-    const file = event.target.files?.[0];
-    if (file) {
-      onFileSelected(file);
-      onRecognize(file);
-    }
-    event.currentTarget.value = "";
+export const LiveScanner = forwardRef<ScannerCaptureHandle, LiveScannerProps>(function LiveScanner(
+  { imageUrl, isProcessing, onFileSelected, onRecognize, onAnalyze, onReset, errorMessage }, ref,
+) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null);
+  const camera = useScannerCamera(!imageUrl && !isProcessing, (file) => {
+    setUploadError(null);
+    onFileSelected(file);
+    onRecognize(file);
+  });
+  const openUpload = (): void => {
+    if (!isProcessing && !camera.capturing) inputRef.current?.click();
   };
+  useImperativeHandle(ref, () => ({ capture: camera.capture, openUpload, retryCamera: camera.retry }));
+
+  const handleUpload = (event: ChangeEvent<HTMLInputElement>): void => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file || isProcessing) return;
+    const error = validateScannerImage(file);
+    setUploadError(error);
+    if (error) return;
+    camera.stop();
+    setFailedImageUrl(null);
+    try {
+      onFileSelected(file);
+    } catch {
+      setUploadError("Không mở được ảnh. Hãy chọn lại tệp hoặc thử ảnh khác.");
+      camera.retry();
+    }
+  };
+  const reset = (): void => {
+    if (isProcessing) return;
+    camera.stop();
+    setUploadError(null);
+    setFailedImageUrl(null);
+    onReset();
+  };
+  const previewFailed = Boolean(imageUrl && failedImageUrl === imageUrl);
+  const error = uploadError || errorMessage || (previewFailed ? "Không hiển thị được ảnh. Hãy chọn một tệp ảnh khác." : null)
+    || (!imageUrl ? camera.error : null);
 
   return (
-    <section className="flex h-full min-h-0 flex-col gap-3">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-semibold text-slate-950">
-            {imageUrl ? "Ảnh vừa chụp" : "Máy ảnh"}
-          </h2>
-          <p className="text-xs text-slate-500">
-            {imageUrl
-              ? allowEnterRetake
-                ? "Nhấn phím xác nhận (↵) trên bàn phím số để chụp lại."
-                : "Nhập số lượng ở khung bên phải."
-              : "Nhấn phím xác nhận (↵) trên bàn phím số để chụp."}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {imageUrl ? (
-            <Button variant="outline" disabled={isProcessing || !cameraReady} onClick={captureAndRecognize}>
-              <RotateCcw className="h-4 w-4" />
-              Chụp lại
-            </Button>
-          ) : (
-            <>
-              <input
-                ref={uploadInputRef}
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                className="hidden"
-                onChange={handleUpload}
-              />
-              <Button
-                variant="outline"
-                size="icon"
-                aria-label="Chọn ảnh có sẵn"
-                title="Chọn ảnh có sẵn"
-                disabled={isProcessing}
-                onClick={() => uploadInputRef.current?.click()}
-              >
-                <ImageUp className="h-4 w-4" />
-              </Button>
-              {cameraReady ? (
-                <Button disabled={isProcessing} onClick={captureAndRecognize}>
-                  {isProcessing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
-                  {isProcessing ? "Đang xử lý..." : "Chụp"}
-                </Button>
-              ) : (
-                <Button disabled={cameraStarting} onClick={() => void startCamera()}>
-                  {cameraStarting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Video className="h-4 w-4" />}
-                  {cameraStarting ? "Đang mở máy ảnh..." : "Bật máy ảnh"}
-                </Button>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-
-      <div className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-slate-200 bg-white">
-        <video
-          ref={videoRef}
-          autoPlay
-          muted
-          playsInline
-          className={cameraReady && !imageUrl ? "h-full min-h-[32rem] w-full bg-white object-contain" : "hidden"}
-        />
+    <section className="scanner-capture" aria-label="Chụp hoặc tải ảnh sản phẩm" aria-busy={isProcessing}>
+      <header className="scanner-capture__header">
+        <h2>{isProcessing ? "Đang phân tích ảnh" : imageUrl ? "Kiểm tra ảnh" : "Chụp ảnh sản phẩm"}</h2>
+      </header>
+      <div className="scanner-capture__stage">
         {imageUrl ? (
-          <div className="h-full min-h-[32rem] overflow-auto bg-white">
-            <ImageOverlay
-              imageUrl={imageUrl}
-              detections={detections}
-              selectedDetectionId={selectedDetectionId}
-              onSelectDetection={onSelectDetection}
-            />
-          </div>
-        ) : !cameraReady ? (
-          <div className="flex h-full min-h-[32rem] flex-col items-center justify-center bg-slate-50 text-center">
-            <VideoOff className="h-10 w-10 text-slate-400" />
-            <p className="mt-3 text-sm font-medium text-slate-700">
-              {cameraStarting ? "Đang kết nối máy ảnh..." : cameraError ?? "Máy ảnh chưa sẵn sàng"}
-            </p>
-          </div>
-        ) : null}
-        {isProcessing && imageUrl ? (
-          <div className="absolute inset-0 flex items-center justify-center bg-slate-950/40 text-white">
-            <div className="flex items-center gap-3 rounded-lg bg-slate-950/80 px-4 py-3 text-sm font-medium">
-              <Loader2 className="h-5 w-5 animate-spin" />
-              Đang nhận diện sản phẩm...
-            </div>
-          </div>
-        ) : null}
+          <img src={imageUrl} alt="Ảnh sản phẩm chờ rà soát" onError={() => setFailedImageUrl(imageUrl)} />
+        ) : (
+          <>
+            <video ref={camera.videoRef} autoPlay playsInline muted aria-label="Hình ảnh trực tiếp từ máy ảnh" />
+            {!camera.ready && <div className="scanner-capture__placeholder" role="status">
+              <Camera size={48} aria-hidden="true" />
+              <strong>{camera.starting ? "Đang mở máy ảnh…" : "Máy ảnh chưa sẵn sàng"}</strong>
+              <span>{camera.starting ? "Cho phép trình duyệt sử dụng máy ảnh khi được hỏi." : "Bạn có thể mở lại máy ảnh hoặc chọn ảnh có sẵn."}</span>
+            </div>}
+            {camera.ready && <div className="scanner-capture__guide" aria-hidden="true" />}
+          </>
+        )}
+        {isProcessing && <div className="scanner-capture__processing" role="status">
+          <span className="scanner-capture__scanline" aria-hidden="true" />
+          <LoaderCircle className="scanner-capture__spinner" size={40} aria-hidden="true" />
+          <strong>Đang tìm sản phẩm trong ảnh…</strong>
+        </div>}
       </div>
+      {error && <p className="scanner-capture__error" role="alert">{error}</p>}
+      <input ref={inputRef} type="file" accept="image/*" hidden onChange={handleUpload} aria-label="Chọn tệp ảnh sản phẩm" />
+      {imageUrl ? (
+        <div className="scanner-capture__actions scanner-capture__actions--preview">
+          <BackButton disabled={isProcessing} onClick={reset} aria-keyshortcuts="0" />
+          <ScannerActionButton shortcut="↵" tier="primary" disabled={isProcessing || previewFailed} onClick={onAnalyze} aria-keyshortcuts="Enter">
+            {isProcessing ? "Đang phân tích…" : "Phân tích ảnh"}
+          </ScannerActionButton>
+        </div>
+      ) : (
+        <div className="scanner-capture__actions">
+          <ScannerActionButton shortcut="1" tier="secondary" disabled={isProcessing || camera.capturing} onClick={openUpload} aria-keyshortcuts="1"><ImageUp size={22} aria-hidden="true" /> Tải ảnh lên</ScannerActionButton>
+          <ScannerActionButton shortcut="2" disabled={isProcessing || camera.starting || camera.capturing} onClick={camera.retry} aria-keyshortcuts="2">Mở lại máy ảnh</ScannerActionButton>
+          <ScannerActionButton shortcut="↵" tier="primary" disabled={!camera.ready || isProcessing || camera.capturing} onClick={camera.capture} aria-keyshortcuts="Enter">{camera.capturing ? "Đang chụp…" : "Chụp và phân tích"}</ScannerActionButton>
+        </div>
+      )}
     </section>
   );
-};
+});

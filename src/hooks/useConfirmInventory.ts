@@ -5,4 +5,5 @@ import type { InventoryConfirmRequest, InventoryConfirmResponse } from "@/types/
 export const useConfirmInventory = (apiBaseUrl: string) =>
   useMutation<InventoryConfirmResponse, Error, InventoryConfirmRequest>({
     mutationFn: (payload) => confirmInventory(apiBaseUrl, payload),
+    retry: false,
   });

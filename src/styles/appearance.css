@@ -1,0 +1,66 @@
+/* Semantic colors keep content readable without altering product photographs. */
+:root {
+  color-scheme: light;
+  --color-canvas: 245 245 245;
+  --color-surface: 255 255 255;
+  --color-subtle: 248 250 252;
+  --color-inset: 241 245 249;
+  --color-content: 2 6 23;
+  --color-secondary: 51 65 85;
+  --color-muted: 100 116 139;
+  --color-faint: 148 163 184;
+  --color-line: 226 232 240;
+  --color-border: 203 213 225;
+  --color-primary: 9 88 217;
+  --color-selected: 230 244 255;
+  --color-selected-pressed: 201 229 252;
+  --color-success: 4 120 87;
+  --color-success-surface: 236 253 245;
+  --color-success-border: 167 243 208;
+  --color-warning: 180 83 9;
+  --color-warning-surface: 255 251 235;
+  --color-warning-border: 253 230 138;
+  --color-danger: 185 28 28;
+  --color-danger-surface: 254 242 242;
+  --color-danger-border: 254 202 202;
+  --color-info: 29 78 216;
+  --color-info-surface: 239 246 255;
+  --color-info-border: 191 219 254;
+  --color-action: 2 6 23;
+  --color-action-hover: 30 41 59;
+  --color-action-content: 255 255 255;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --color-canvas: 17 19 22;
+  --color-surface: 27 29 33;
+  --color-subtle: 24 26 30;
+  --color-inset: 36 40 46;
+  --color-content: 240 240 240;
+  --color-secondary: 210 215 223;
+  --color-muted: 182 189 200;
+  --color-faint: 147 158 175;
+  --color-line: 44 49 57;
+  --color-border: 59 65 74;
+  --color-primary: 133 184 255;
+  --color-selected: 32 54 83;
+  --color-selected-pressed: 40 66 101;
+  --color-success: 117 221 177;
+  --color-success-surface: 23 48 39;
+  --color-success-border: 48 91 73;
+  --color-warning: 255 208 112;
+  --color-warning-surface: 53 43 24;
+  --color-warning-border: 109 85 39;
+  --color-danger: 255 153 153;
+  --color-danger-surface: 57 31 35;
+  --color-danger-border: 114 57 65;
+  --color-info: 133 184 255;
+  --color-info-surface: 28 43 65;
+  --color-info-border: 48 77 114;
+  --color-action: 32 54 83;
+  --color-action-hover: 40 66 101;
+  --color-action-content: 240 240 240;
+}
+
+body { background: rgb(var(--color-canvas)); color: rgb(var(--color-content)); }

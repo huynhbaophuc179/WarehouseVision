@@ -6,4 +6,5 @@ import type { DetectionResult } from "@/types/api";
 export const useRecognizeImage = (apiBaseUrl: string) =>
   useMutation<DetectionResult[], Error, RecognizeImageInput>({
     mutationFn: (input) => recognizeImage(apiBaseUrl, input),
+    retry: false,
   });

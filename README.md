@@ -4,11 +4,13 @@
 
 ## Kiến trúc
 
-- `src/`: giao diện React 18, TypeScript, Vite và Tailwind CSS.
+- `src/`: giao diện React 18, TypeScript, Vite, Ant Design 6 và Tailwind CSS cho bố trí.
 - `app/`: API FastAPI, nhận diện vùng bằng YOLO, mã hàng bằng CLIP và tìm kiếm vector.
 - PostgreSQL 15 cùng pgvector: lưu sản phẩm, vector ảnh tham chiếu, giao dịch kho và phiên rà soát.
 - `models/warehouse.pt`: trọng số YOLO tùy chỉnh dùng để tìm vùng sản phẩm.
 - `data/`: ảnh tham chiếu, ảnh phiên và dữ liệu huấn luyện phát sinh trong quá trình sử dụng.
+
+Xem [kiến trúc giao diện](docs/frontend-architecture.md) để biết trách nhiệm của thành phần React, trạng thái quy trình, lớp gọi API và cấu hình Ant Design.
 
 Luồng nhận diện chính:
 
@@ -94,6 +96,8 @@ Sau đó chạy giao diện:
 npm ci
 npm run dev
 ```
+
+Giao diện phát triển chạy tại `http://localhost:5174`. Cấu hình Docker của API cho phép nguồn này bên cạnh cổng `5173` của giao diện Docker. CORS phân biệt cả tên máy và cổng; khi đổi nguồn truy cập, cập nhật `CORS_ALLOWED_ORIGINS` rồi chạy `docker compose up -d --no-deps --force-recreate api` để API nhận cấu hình mới.
 
 ## Kiểm tra
 

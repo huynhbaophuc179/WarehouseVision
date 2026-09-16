@@ -10,12 +10,12 @@ export interface CameraImageCaptureProps {
 
 const cameraErrorMessage = (error: unknown): string => {
   if (error instanceof DOMException && error.name === "NotAllowedError") {
-    return "Chưa được cấp quyền camera. Hãy cho phép trình duyệt sử dụng camera.";
+    return "Chưa được cấp quyền máy ảnh. Hãy cho phép trình duyệt sử dụng máy ảnh.";
   }
   if (error instanceof DOMException && error.name === "NotFoundError") {
-    return "Không tìm thấy camera trên máy tính.";
+    return "Không tìm thấy máy ảnh trên máy tính.";
   }
-  return "Không mở được camera. Hãy kiểm tra kết nối camera và thử lại.";
+  return "Không mở được máy ảnh. Hãy kiểm tra kết nối máy ảnh và thử lại.";
 };
 
 export const CameraImageCapture = ({
@@ -52,7 +52,7 @@ export const CameraImageCapture = ({
 
   const startCamera = React.useCallback(async (): Promise<void> => {
     if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraError("Trình duyệt này không hỗ trợ camera trực tiếp.");
+      setCameraError("Trình duyệt này không hỗ trợ máy ảnh trực tiếp.");
       setCameraOpen(true);
       return;
     }
@@ -85,7 +85,7 @@ export const CameraImageCapture = ({
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       } else {
-        throw new Error("Không tạo được khung camera.");
+        throw new Error("Không tạo được khung máy ảnh.");
       }
       setCameraReady(true);
     } catch (error) {
@@ -111,7 +111,7 @@ export const CameraImageCapture = ({
     canvas.height = video.videoHeight;
     const context = canvas.getContext("2d");
     if (!context) {
-      setCameraError("Không chụp được ảnh từ camera.");
+      setCameraError("Không chụp được ảnh từ máy ảnh.");
       return;
     }
     setCapturing(true);
@@ -120,7 +120,7 @@ export const CameraImageCapture = ({
       (blob) => {
         setCapturing(false);
         if (!blob) {
-          setCameraError("Không tạo được ảnh từ camera.");
+          setCameraError("Không tạo được ảnh từ máy ảnh.");
           return;
         }
         onCapture(new File([blob], `linh-kien-${Date.now()}.jpg`, { type: "image/jpeg" }));
@@ -147,7 +147,7 @@ export const CameraImageCapture = ({
       <div className="grid grid-cols-2 gap-2">
         <Button type="button" disabled={disabled || cameraStarting} onClick={() => void startCamera()}>
           {cameraStarting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
-          {cameraStarting ? "Đang mở camera..." : cameraOpen ? "Mở lại camera" : "Chụp bằng camera"}
+          {cameraStarting ? "Đang mở máy ảnh..." : cameraOpen ? "Mở lại máy ảnh" : "Chụp bằng máy ảnh"}
         </Button>
         <Button
           type="button"
@@ -161,7 +161,7 @@ export const CameraImageCapture = ({
       </div>
 
       {cameraOpen ? (
-        <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+        <div className="overflow-hidden rounded-xl border border-line bg-subtle">
           <div className="relative flex min-h-[26rem] items-center justify-center md:min-h-[34rem]">
             <video
               ref={videoRef}
@@ -171,22 +171,22 @@ export const CameraImageCapture = ({
               className={cameraReady ? "min-h-[26rem] max-h-[70vh] w-full bg-white object-contain md:min-h-[34rem]" : "hidden"}
             />
             {!cameraReady ? (
-              <div className="flex min-h-[26rem] flex-col items-center justify-center px-6 text-center text-slate-500 md:min-h-[34rem]">
+              <div className="flex min-h-[26rem] flex-col items-center justify-center px-6 text-center text-muted md:min-h-[34rem]">
                 {cameraStarting ? (
                   <Loader2 className="h-8 w-8 animate-spin" />
                 ) : (
                   <VideoOff className="h-8 w-8" />
                 )}
                 <p className="mt-3 text-sm">
-                  {cameraStarting ? "Đang kết nối camera..." : cameraError ?? "Camera chưa sẵn sàng."}
+                  {cameraStarting ? "Đang kết nối máy ảnh..." : cameraError ?? "Máy ảnh chưa sẵn sàng."}
                 </p>
               </div>
             ) : null}
           </div>
-          <div className="flex items-center justify-between gap-2 border-t border-slate-200 bg-white p-3">
-            <p className="flex items-center gap-2 text-xs text-slate-600">
+          <div className="flex items-center justify-between gap-2 border-t border-line bg-surface p-3">
+            <p className="flex items-center gap-2 text-xs text-secondary">
               <Video className="h-4 w-4" />
-              {cameraReady ? "Đặt linh kiện vào giữa khung hình." : "Chờ camera sẵn sàng."}
+              {cameraReady ? "Đặt linh kiện vào giữa khung hình." : "Chờ máy ảnh sẵn sàng."}
             </p>
             <div className="flex gap-2">
               <Button type="button" variant="secondary" size="sm" onClick={closeCamera}>
@@ -202,7 +202,7 @@ export const CameraImageCapture = ({
       ) : null}
 
       {cameraError && cameraOpen && cameraReady ? (
-        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+        <div className="rounded-md border border-danger-border bg-danger-surface px-3 py-2 text-sm text-danger">
           {cameraError}
         </div>
       ) : null}

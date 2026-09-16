@@ -1,0 +1,110 @@
+.header-navigation {
+  --header-background: #172b4d;
+  --header-hover: #243f63;
+  --header-text: #dce5f2;
+  --header-primary: #ffffff;
+  --header-border: #294366;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 24px;
+  min-height: 64px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--header-border);
+  background: var(--header-background);
+}
+
+.header-navigation__items {
+  display: flex;
+  flex: 1;
+  align-self: stretch;
+  gap: 8px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--header-border) transparent;
+}
+
+.header-navigation .ant-btn {
+  flex-shrink: 0;
+  color: var(--header-text);
+  font-size: 14px;
+  font-weight: 400;
+  box-shadow: none;
+}
+
+.header-navigation .ant-btn.header-navigation__item {
+  position: relative;
+  align-self: stretch;
+  height: auto;
+  min-height: 44px;
+  padding: 10px 16px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  line-height: 22px;
+  white-space: nowrap;
+}
+
+.header-navigation .ant-btn[aria-current="page"] {
+  color: var(--header-primary);
+  font-weight: 600;
+}
+
+.header-navigation__item[aria-current="page"]::after {
+  content: "";
+  position: absolute;
+  right: 16px;
+  bottom: 0;
+  left: 16px;
+  height: 2px;
+  background: var(--header-primary);
+}
+
+.header-navigation__actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.header-navigation .ant-btn.header-navigation__action {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.header-navigation .ant-btn:not(:disabled):not(.ant-btn-disabled):is(:hover, :active, :focus-visible) {
+  background: var(--header-hover);
+  color: var(--header-primary);
+}
+
+.header-navigation .ant-btn:focus-visible {
+  outline: 2px solid var(--header-primary);
+  outline-offset: -3px;
+}
+
+html[data-theme="dark"] .header-navigation {
+  --header-background: #14243d;
+  --header-hover: #223a59;
+  --header-text: #dce5f2;
+  --header-primary: #ffffff;
+  --header-border: #2d4260;
+}
+
+@media (max-width: 800px) {
+  .header-navigation { gap: 12px; padding: 0 12px; }
+  .header-navigation__items { gap: 0; }
+  .header-navigation .ant-btn.header-navigation__item { padding-right: 12px; padding-left: 12px; }
+}
+
+@media (max-width: 480px) {
+  .header-navigation { gap: 8px; padding: 0 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .header-navigation .ant-btn { transition: none; }
+}

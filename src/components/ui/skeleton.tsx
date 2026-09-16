@@ -1,9 +1,8 @@
-import { cn } from "@/lib/utils";
+import { Skeleton as AntSkeleton } from "antd";
 
-export interface SkeletonProps {
-  className?: string;
-}
-
+export interface SkeletonProps { className?: string }
 export const Skeleton = ({ className }: SkeletonProps): JSX.Element => (
-  <div className={cn("animate-pulse rounded-md bg-slate-200", className)} />
+  <div className={className} aria-label="Đang tải">
+    <AntSkeleton.Node active style={{ width: "100%", height: "100%", minHeight: 16 }} />
+  </div>
 );

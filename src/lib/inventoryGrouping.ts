@@ -143,12 +143,15 @@ export const buildGroupedInventoryPayload = (
   const { groups } = groupInventoryDetections(detections, decisions);
   const confirmedItems = groups
     .filter((group) => !group.skipped)
-    .map((group) => ({
+    .map((group) => {
+      const value = quantities[group.productId] ?? "";
+      if (!isValidInventoryQuantity(value)) throw new Error("Số lượng phải là số nguyên dương hợp lệ.");
+      return {
       detection_id: group.representativeDetection.detection_id,
       product_id: group.productId,
-      quantity: Math.max(1, Number.parseInt(quantities[group.productId] ?? "1", 10) || 1),
+      quantity: Number(value),
       action,
-    }));
+    }; });
   const rejectedItems = detections.flatMap((detection) => {
     const state = decisions[detection.detection_id] ?? fallbackDecision(detection);
     if (state.decision === "accepted" || state.decision === "corrected") {
@@ -167,5 +170,5 @@ export const isValidInventoryQuantity = (value: string): boolean => {
   if (!/^\d+$/.test(value.trim())) {
     return false;
   }
-  return Number.parseInt(value, 10) >= 1;
+  return Number.isSafeInteger(Number(value)) && Number(value) >= 1;
 };

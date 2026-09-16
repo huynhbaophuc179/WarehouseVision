@@ -52,7 +52,7 @@ export const DetectionConfirmationPanel = ({
     <Card>
       <CardHeader className="pb-3">
         <CardTitle>Xác nhận chi tiết</CardTitle>
-        <p className="text-sm text-slate-500">
+        <p className="text-sm text-muted">
           Kiểm tra từng vùng, chọn đúng mã sản phẩm và nhập số lượng trước khi cập nhật kho.
         </p>
       </CardHeader>

@@ -154,8 +154,8 @@ export const MissingBoxCanvas = ({
 
   if (!imageBase64) {
     return (
-      <div className="flex min-h-[420px] items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50">
-        <div className="text-center text-slate-500">
+      <div className="flex min-h-[420px] items-center justify-center rounded-lg border border-dashed border-border bg-subtle">
+        <div className="text-center text-muted">
           <ImageOff className="mx-auto h-10 w-10" />
           <p className="mt-3 text-sm font-medium">Không tải được ảnh phiên nhận diện</p>
         </div>
@@ -164,7 +164,7 @@ export const MissingBoxCanvas = ({
   }
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-slate-950 p-2">
+    <div className="rounded-xl border border-line bg-slate-950 p-2">
       {loadState === "error" ? (
         <div className="flex min-h-[420px] items-center justify-center rounded-lg bg-slate-900 text-sm text-white">
           Không hiển thị được ảnh. Vui lòng chọn phiên khác.

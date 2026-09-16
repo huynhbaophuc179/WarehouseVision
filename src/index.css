@@ -1,3 +1,7 @@
+@import "./styles/fonts.css";
+@import "./styles/appearance.css";
+@import "./styles/actions.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

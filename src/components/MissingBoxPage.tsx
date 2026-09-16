@@ -1,16 +1,21 @@
+import { BackButton } from "@/components/ui/back-button";
+import { Select } from "antd";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, CheckCircle2, Loader2, Trash2 } from "lucide-react";
 import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { MissingBoxCanvas, type DisplayBox, type ExistingDisplayBox } from "@/components/MissingBoxCanvas";
+import {
+  MissingBoxCanvas,
+  type DisplayBox,
+  type ExistingDisplayBox,
+} from "@/components/MissingBoxCanvas";
 import {
   addManualDetection,
   deleteReviewDetection,
   fetchProducts,
   fetchReviewSession,
-  fetchReviewSessions,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type {
@@ -18,11 +23,13 @@ import type {
   ManualDetectionRequest,
   Product,
   RecognitionSessionDetail,
-  RecognitionSessionSummary,
 } from "@/types/api";
 
 export interface MissingBoxPageProps {
   apiBaseUrl: string;
+  sessionId: number;
+  backLabel?: string;
+  onBack: () => void;
 }
 
 interface Size {
@@ -30,20 +37,8 @@ interface Size {
   height: number;
 }
 
-const formatSessionLabel = (session: RecognitionSessionSummary): string => {
-  const createdAt = new Date(session.created_at);
-  const dateText = Number.isNaN(createdAt.getTime())
-    ? session.created_at
-    : createdAt.toLocaleString("vi-VN", {
-        hour: "2-digit",
-        minute: "2-digit",
-        day: "2-digit",
-        month: "2-digit",
-      });
-  return `Phiên #${session.id} · ${dateText}`;
-};
-
-const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
+const clamp = (value: number, min: number, max: number): number =>
+  Math.max(min, Math.min(max, value));
 
 const normalizeDisplayBox = (box: DisplayBox): DisplayBox => ({
   x1: Math.min(box.x1, box.x2),
@@ -52,7 +47,11 @@ const normalizeDisplayBox = (box: DisplayBox): DisplayBox => ({
   y2: Math.max(box.y1, box.y2),
 });
 
-const convertDisplayBoxToOriginal = (box: DisplayBox, displaySize: Size, originalSize: Size): number[] => {
+const convertDisplayBoxToOriginal = (
+  box: DisplayBox,
+  displaySize: Size,
+  originalSize: Size,
+): number[] => {
   const normalized = normalizeDisplayBox(box);
   const scaleX = originalSize.width / displaySize.width;
   const scaleY = originalSize.height / displaySize.height;
@@ -69,7 +68,12 @@ const reviewBoxToDisplayBox = (
   originalSize: Size,
   displaySize: Size,
 ): DisplayBox | null => {
-  if (!box || box.length < 4 || originalSize.width <= 0 || originalSize.height <= 0) {
+  if (
+    !box ||
+    box.length < 4 ||
+    originalSize.width <= 0 ||
+    originalSize.height <= 0
+  ) {
     return null;
   }
   return {
@@ -80,7 +84,10 @@ const reviewBoxToDisplayBox = (
   };
 };
 
-const buildImageDataUrl = (base64: string | null, mimeType: string | null): string | null =>
+const buildImageDataUrl = (
+  base64: string | null,
+  mimeType: string | null,
+): string | null =>
   base64 ? `data:${mimeType || "image/jpeg"};base64,${base64}` : null;
 
 const createCropPreview = async (
@@ -106,7 +113,13 @@ const createCropPreview = async (
         reject(new Error("Không tạo được ảnh cắt."));
         return;
       }
-      sourceContext.drawImage(image, 0, 0, displaySize.width, displaySize.height);
+      sourceContext.drawImage(
+        image,
+        0,
+        0,
+        displaySize.width,
+        displaySize.height,
+      );
       cropContext.drawImage(
         sourceCanvas,
         Math.round(normalized.x1),
@@ -124,7 +137,10 @@ const createCropPreview = async (
     image.src = imageUrl;
   });
 
-const validateOriginalBox = (box: number[], originalSize: Size): string | null => {
+const validateOriginalBox = (
+  box: number[],
+  originalSize: Size,
+): string | null => {
   const [x1, y1, x2, y2] = box;
   if (x2 <= x1 || y2 <= y1) {
     return "Vùng chọn chưa hợp lệ.";
@@ -138,10 +154,18 @@ const validateOriginalBox = (box: number[], originalSize: Size): string | null =
   return null;
 };
 
-const manualDetections = (session: RecognitionSessionDetail | undefined): DetectionReviewResponse[] =>
-  session?.detections.filter((detection) => detection.user_decision === "manually_added") ?? [];
+const manualDetections = (
+  session: RecognitionSessionDetail | undefined,
+): DetectionReviewResponse[] =>
+  session?.detections.filter(
+    (detection) => detection.user_decision === "manually_added",
+  ) ?? [];
 
-const fitDisplaySize = (previewSize: Size, maxWidth: number, maxHeight: number): Size => {
+const fitDisplaySize = (
+  previewSize: Size,
+  maxWidth: number,
+  maxHeight: number,
+): Size => {
   const sourceWidth = Math.max(1, previewSize.width);
   const sourceHeight = Math.max(1, previewSize.height);
   const widthScale = maxWidth / sourceWidth;
@@ -153,31 +177,23 @@ const fitDisplaySize = (previewSize: Size, maxWidth: number, maxHeight: number):
   };
 };
 
-export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element => {
+export const MissingBoxPage = ({
+  apiBaseUrl,
+  sessionId,
+  backLabel = "Quay lại danh sách phiên",
+  onBack,
+}: MissingBoxPageProps): JSX.Element => {
   const queryClient = useQueryClient();
-  const [selectedSessionId, setSelectedSessionId] = React.useState<number | null>(null);
   const [selectedBox, setSelectedBox] = React.useState<DisplayBox | null>(null);
-  const [cropPreviewUrl, setCropPreviewUrl] = React.useState<string | null>(null);
+  const [cropPreviewUrl, setCropPreviewUrl] = React.useState<string | null>(
+    null,
+  );
   const [selectedProductId, setSelectedProductId] = React.useState("");
   const [statusMessage, setStatusMessage] = React.useState<string | null>(null);
 
-  const sessionsQuery = useQuery<RecognitionSessionSummary[], Error>({
-    queryKey: ["review-sessions", apiBaseUrl],
-    queryFn: () => fetchReviewSessions(apiBaseUrl, 500),
-    staleTime: 15_000,
-  });
-
-  React.useEffect(() => {
-    if (selectedSessionId || !sessionsQuery.data?.length) {
-      return;
-    }
-    setSelectedSessionId(sessionsQuery.data[0].id);
-  }, [selectedSessionId, sessionsQuery.data]);
-
   const sessionQuery = useQuery<RecognitionSessionDetail, Error>({
-    queryKey: ["review-session", apiBaseUrl, selectedSessionId],
-    queryFn: () => fetchReviewSession(apiBaseUrl, selectedSessionId ?? 0),
-    enabled: selectedSessionId !== null,
+    queryKey: ["review-session", apiBaseUrl, sessionId],
+    queryFn: () => fetchReviewSession(apiBaseUrl, sessionId),
   });
 
   const productsQuery = useQuery<Product[], Error>({
@@ -187,48 +203,73 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
   });
 
   const addMutation = useMutation({
-    mutationFn: (payload: ManualDetectionRequest) => {
-      if (!selectedSessionId) {
-        throw new Error("Chưa chọn phiên nhận diện.");
-      }
-      return addManualDetection(apiBaseUrl, selectedSessionId, payload);
-    },
+    mutationFn: (payload: ManualDetectionRequest) =>
+      addManualDetection(apiBaseUrl, sessionId, payload),
     onSuccess: async () => {
       setSelectedBox(null);
       setCropPreviewUrl(null);
       setStatusMessage("Đã lưu vùng.");
-      await queryClient.invalidateQueries({ queryKey: ["review-session", apiBaseUrl, selectedSessionId] });
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["review-session", apiBaseUrl, sessionId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["review-sessions", apiBaseUrl],
+        }),
+      ]);
     },
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (reviewId: number) => deleteReviewDetection(apiBaseUrl, reviewId),
+    mutationFn: (reviewId: number) =>
+      deleteReviewDetection(apiBaseUrl, reviewId),
     onSuccess: async () => {
       setStatusMessage("Đã xóa vùng đã lưu.");
-      await queryClient.invalidateQueries({ queryKey: ["review-session", apiBaseUrl, selectedSessionId] });
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["review-session", apiBaseUrl, sessionId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["review-sessions", apiBaseUrl],
+        }),
+      ]);
     },
   });
 
   const session = sessionQuery.data;
   const originalSize: Size = {
     width: session?.original_image_width ?? session?.preview_image_width ?? 1,
-    height: session?.original_image_height ?? session?.preview_image_height ?? 1,
+    height:
+      session?.original_image_height ?? session?.preview_image_height ?? 1,
   };
   const previewSize: Size = {
     width: session?.preview_image_width ?? originalSize.width,
     height: session?.preview_image_height ?? originalSize.height,
   };
   const displaySize = fitDisplaySize(previewSize, 900, 560);
-  const imageUrl = buildImageDataUrl(session?.original_image_base64 ?? null, session?.preview_image_mime_type ?? session?.original_image_mime_type ?? null);
+  const imageUrl = buildImageDataUrl(
+    session?.original_image_base64 ?? null,
+    session?.preview_image_mime_type ??
+      session?.original_image_mime_type ??
+      null,
+  );
   const existingBoxes: ExistingDisplayBox[] =
     session?.detections
       .filter((detection) => detection.user_decision !== "manually_added")
       .flatMap((detection, index) => {
-        const box = reviewBoxToDisplayBox(detection.corrected_box ?? detection.original_box, originalSize, displaySize);
+        const box = reviewBoxToDisplayBox(
+          detection.corrected_box ?? detection.original_box,
+          originalSize,
+          displaySize,
+        );
         return box ? [{ ...box, label: String(index + 1) }] : [];
       }) ?? [];
-  const correctedBox = selectedBox ? convertDisplayBoxToOriginal(selectedBox, displaySize, originalSize) : null;
-  const validationMessage = correctedBox ? validateOriginalBox(correctedBox, originalSize) : null;
+  const correctedBox = selectedBox
+    ? convertDisplayBoxToOriginal(selectedBox, displaySize, originalSize)
+    : null;
+  const validationMessage = correctedBox
+    ? validateOriginalBox(correctedBox, originalSize)
+    : null;
   const savedBoxes = manualDetections(session);
 
   React.useEffect(() => {
@@ -236,7 +277,7 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
     setCropPreviewUrl(null);
     setSelectedProductId("");
     setStatusMessage(null);
-  }, [selectedSessionId]);
+  }, [sessionId]);
 
   React.useEffect(() => {
     if (!selectedBox || !imageUrl) {
@@ -274,7 +315,12 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
       confirmed_product_id: selectedProductId || null,
       external_product_id: null,
       user_decision: "manually_added",
-      displayed_box: [selectedBox.x1, selectedBox.y1, selectedBox.x2, selectedBox.y2],
+      displayed_box: [
+        selectedBox.x1,
+        selectedBox.y1,
+        selectedBox.x2,
+        selectedBox.y2,
+      ],
       display_size: [displaySize.width, displaySize.height],
       source: "human_missing_box",
     });
@@ -282,44 +328,27 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
 
   return (
     <section className="space-y-3 pb-6">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-slate-600">Kéo quanh sản phẩm bị bỏ sót.</p>
-        <div className="w-full max-w-sm">
-          {sessionsQuery.isLoading ? (
-            <Skeleton className="h-10 w-full" />
-          ) : (
-            <select
-              value={selectedSessionId ?? ""}
-              onChange={(event) => setSelectedSessionId(Number(event.target.value))}
-              aria-label="Chọn phiên"
-              className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-900 outline-none focus:ring-2 focus:ring-slate-400"
-            >
-              {sessionsQuery.data?.map((sessionItem) => (
-                <option key={sessionItem.id} value={sessionItem.id}>
-                  {formatSessionLabel(sessionItem)}
-                </option>
-              ))}
-            </select>
-          )}
+      <div className="flex items-center gap-3">
+        <BackButton aria-label={backLabel} onClick={onBack}
+          disabled={addMutation.isPending || deleteMutation.isPending} />
+        <div className="min-w-0">
+          <h1 className="text-lg font-semibold text-content">
+            Bổ sung vùng · Phiên #{sessionId}
+          </h1>
+          <p className="text-sm text-secondary">Kéo quanh sản phẩm bị bỏ sót.</p>
         </div>
       </div>
 
-      {sessionsQuery.error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          Không tải được danh sách phiên: {sessionsQuery.error.message}
-        </div>
-      )}
-
       <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
-        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="rounded-xl border border-line bg-surface p-4 shadow-sm">
           <div className="mb-3 flex items-center justify-end">
-            <div className="flex shrink-0 items-center gap-3 text-xs text-slate-500">
+            <div className="flex shrink-0 items-center gap-3 text-xs text-muted">
               <span className="inline-flex items-center gap-1">
-                <span className="h-3 w-5 rounded-sm border-2 border-dashed border-blue-600" />
+                <span className="h-3 w-5 rounded-sm border-2 border-dashed border-primary" />
                 Hệ thống đã nhận diện
               </span>
               <span className="inline-flex items-center gap-1">
-                <span className="h-3 w-5 rounded-sm border-2 border-emerald-600" />
+                <span className="h-3 w-5 rounded-sm border-2 border-success" />
                 Vùng mới
               </span>
             </div>
@@ -327,13 +356,17 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
           {sessionQuery.isLoading ? (
             <Skeleton className="h-[560px] w-full" />
           ) : sessionQuery.error ? (
-            <div className="flex h-[420px] items-center justify-center rounded-lg border border-red-200 bg-red-50 text-sm text-red-700">
+            <div className="flex h-[420px] items-center justify-center rounded-lg border border-danger-border bg-danger-surface text-sm text-danger">
               Không tải được phiên: {sessionQuery.error.message}
             </div>
           ) : (
             <MissingBoxCanvas
               imageBase64={session?.original_image_base64 ?? null}
-              mimeType={session?.preview_image_mime_type ?? session?.original_image_mime_type ?? null}
+              mimeType={
+                session?.preview_image_mime_type ??
+                session?.original_image_mime_type ??
+                null
+              }
               width={displaySize.width}
               height={displaySize.height}
               existingBoxes={existingBoxes}
@@ -350,8 +383,9 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
             </CardHeader>
             <CardContent className="space-y-4">
               {!selectedBox ? (
-                <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-5 text-sm text-slate-600">
-                  Chưa chọn vùng. Hãy kéo chuột trên ảnh để khoanh vùng sản phẩm bị thiếu.
+                <div className="rounded-lg border border-dashed border-border bg-subtle p-5 text-sm text-secondary">
+                  Chưa chọn vùng. Hãy kéo chuột trên ảnh để khoanh vùng sản phẩm
+                  bị thiếu.
                 </div>
               ) : (
                 <>
@@ -359,51 +393,67 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
                     <img
                       src={cropPreviewUrl}
                       alt="Ảnh cắt vùng vừa chọn"
-                      className="aspect-video w-full rounded-lg border border-slate-200 object-contain"
+                      className="aspect-video w-full rounded-lg border border-line object-contain"
                     />
                   ) : (
                     <Skeleton className="h-40 w-full" />
                   )}
                   {validationMessage && (
-                    <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
+                    <div className="flex gap-2 rounded-md border border-warning-border bg-warning-surface p-3 text-sm text-warning">
                       <AlertCircle className="h-4 w-4 shrink-0" />
                       <span>{validationMessage}</span>
                     </div>
                   )}
                   <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-700">Gán mã hàng</label>
-                    <select
-                      value={selectedProductId}
-                      onChange={(event) => setSelectedProductId(event.target.value)}
-                      className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none focus:ring-2 focus:ring-slate-400"
+                    <label
+                      htmlFor="missing-box-product"
+                      className="text-sm font-medium text-secondary"
                     >
-                      <option value="">Chưa xác định</option>
-                      {productsQuery.data?.map((product) => (
-                        <option key={product.product_id} value={product.product_id}>
-                          {product.product_id} · {product.name}
-                        </option>
-                      ))}
-                    </select>
+                      Gán mã hàng
+                    </label>
+                    <Select
+                suffixIcon={<span aria-hidden="true">⌄</span>}
+                menuItemSelectedIcon={<span aria-hidden="true">✓</span>}
+                      id="missing-box-product"
+                      aria-label="Gán mã hàng"
+                      value={selectedProductId}
+                      onChange={setSelectedProductId}
+                      className="h-10 w-full"
+                      showSearch={{ optionFilterProp: "label" }}
+                      options={[
+                        { value: "", label: "Chưa xác định" },
+                        ...(productsQuery.data ?? []).map((product) => ({
+                          value: product.product_id,
+                          label: `${product.product_id} · ${product.name}`,
+                        })),
+                      ]}
+                    />
                   </div>
                   <Button
                     type="button"
                     className="w-full"
-                    disabled={!selectedBox || Boolean(validationMessage) || addMutation.isPending}
+                    disabled={
+                      !selectedBox ||
+                      Boolean(validationMessage) ||
+                      addMutation.isPending
+                    }
                     onClick={handleSave}
                   >
-                    {addMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+                    {addMutation.isPending && (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    )}
                     Lưu vùng
                   </Button>
                 </>
               )}
               {statusMessage && (
-                <div className="flex gap-2 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">
+                <div className="flex gap-2 rounded-md border border-success-border bg-success-surface p-3 text-sm text-success">
                   <CheckCircle2 className="h-4 w-4 shrink-0" />
                   <span>{statusMessage}</span>
                 </div>
               )}
               {addMutation.error && (
-                <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                <div className="rounded-md border border-danger-border bg-danger-surface p-3 text-sm text-danger">
                   {addMutation.error.message}
                 </div>
               )}
@@ -418,36 +468,47 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
         </CardHeader>
         <CardContent>
           {savedBoxes.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-500">
+            <div className="rounded-lg border border-dashed border-border bg-subtle p-6 text-center text-sm text-muted">
               Chưa có vùng nào được lưu cho phiên này.
             </div>
           ) : (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               {savedBoxes.map((detection) => {
-                const title = detection.confirmed_product_id || `Vùng #${detection.detection_index}`;
+                const title =
+                  detection.confirmed_product_id ||
+                  `Vùng #${detection.detection_index}`;
                 return (
                   <div
                     key={detection.id}
                     className={cn(
-                      "overflow-hidden rounded-lg border border-slate-200 bg-white",
+                      "overflow-hidden rounded-lg border border-line bg-surface",
                       deleteMutation.isPending && "opacity-70",
                     )}
                   >
                     {detection.crop_preview_base64 ? (
                       <img
-                        src={buildImageDataUrl(detection.crop_preview_base64, "image/jpeg") ?? ""}
+                        src={
+                          buildImageDataUrl(
+                            detection.crop_preview_base64,
+                            "image/jpeg",
+                          ) ?? ""
+                        }
                         alt={title}
-                        className="h-32 w-full bg-slate-100 object-cover"
+                        className="h-32 w-full bg-inset object-cover"
                       />
                     ) : (
-                      <div className="flex h-32 items-center justify-center bg-slate-100 text-xs text-slate-500">
+                      <div className="flex h-32 items-center justify-center bg-inset text-xs text-muted">
                         Không có ảnh cắt
                       </div>
                     )}
                     <div className="flex items-center justify-between gap-2 p-3">
                       <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold text-slate-950">{title}</p>
-                        <p className="text-xs text-slate-500">#{detection.detection_index}</p>
+                        <p className="truncate text-sm font-semibold text-content">
+                          {title}
+                        </p>
+                        <p className="text-xs text-muted">
+                          #{detection.detection_index}
+                        </p>
                       </div>
                       <Button
                         type="button"
@@ -457,7 +518,7 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
                         onClick={() => deleteMutation.mutate(detection.id)}
                         aria-label="Xóa vùng đã lưu"
                       >
-                        <Trash2 className="h-4 w-4 text-red-600" />
+                        <Trash2 className="h-4 w-4 text-danger" />
                       </Button>
                     </div>
                   </div>
@@ -466,7 +527,7 @@ export const MissingBoxPage = ({ apiBaseUrl }: MissingBoxPageProps): JSX.Element
             </div>
           )}
           {deleteMutation.error && (
-            <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            <div className="mt-3 rounded-md border border-danger-border bg-danger-surface p-3 text-sm text-danger">
               {deleteMutation.error.message}
             </div>
           )}

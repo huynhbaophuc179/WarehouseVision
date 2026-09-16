@@ -178,7 +178,7 @@ export const ProductImageCropCard = ({
   };
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-3">
+    <div className="rounded-xl border border-line bg-surface p-3">
       <div className="mb-3 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -190,15 +190,15 @@ export const ProductImageCropCard = ({
               </Badge>
             ) : null}
           </div>
-          <p className="mt-1 truncate text-sm font-semibold text-slate-950">{entry.file.name}</p>
-          <p className="text-xs text-slate-500">Kéo chuột trên ảnh nếu muốn chỉ lưu đúng vùng linh kiện.</p>
+          <p className="mt-1 truncate text-sm font-semibold text-content">{entry.file.name}</p>
+          <p className="text-xs text-muted">Kéo chuột trên ảnh nếu muốn chỉ lưu đúng vùng linh kiện.</p>
         </div>
         <Button type="button" variant="outline" size="icon" onClick={() => onDelete(entry.id)}>
           <Trash2 className="h-4 w-4" />
         </Button>
       </div>
       {loadError ? (
-        <div className="flex min-h-56 items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50 text-sm text-slate-500">
+        <div className="flex min-h-56 items-center justify-center rounded-lg border border-dashed border-border bg-subtle text-sm text-muted">
           <div className="text-center">
             <ImageOff className="mx-auto h-8 w-8" />
             <p className="mt-2">{loadError}</p>
@@ -217,12 +217,12 @@ export const ProductImageCropCard = ({
           />
           <div className="space-y-3">
             <div>
-              <p className="text-sm font-semibold text-slate-950">Ảnh sẽ lưu</p>
-              <p className="text-xs text-slate-500">
+              <p className="text-sm font-semibold text-content">Ảnh sẽ lưu</p>
+              <p className="text-xs text-muted">
                 {entry.croppedFile ? "Hệ thống sẽ lưu vùng đã cắt." : "Chưa cắt vùng, hệ thống sẽ lưu toàn bộ ảnh."}
               </p>
             </div>
-            <div className="rounded-lg border border-slate-200 bg-slate-950 p-2">
+            <div className="rounded-lg border border-line bg-slate-950 p-2">
               <img
                 src={entry.cropPreviewUrl ?? loadedImage.dataUrl}
                 alt={entry.file.name}
@@ -235,11 +235,11 @@ export const ProductImageCropCard = ({
                 Bỏ vùng cắt
               </Button>
             ) : null}
-            {cropError ? <p className="text-sm text-red-600">{cropError}</p> : null}
+            {cropError ? <p className="text-sm text-danger">{cropError}</p> : null}
           </div>
         </div>
       ) : (
-        <div className="h-56 animate-pulse rounded-lg bg-slate-100" />
+        <div className="h-56 animate-pulse rounded-lg bg-inset" />
       )}
     </div>
   );
